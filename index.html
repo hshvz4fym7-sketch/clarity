@@ -675,7 +675,15 @@ async function fetchWellness() {
   const url  = `https://intervals.icu/api/v1/athlete/${C.id}/wellness?oldest=${from}&newest=${to}`;
   try {
     const r = await fetch(url, { headers: { Authorization: 'Basic ' + btoa('API_KEY:' + C.key) } });
-    return await r.json();
+    const data = await r.json();
+    if (Array.isArray(data) && data.length) {
+      const sample = data.find(d => d.weight != null) || data[data.length - 1];
+      console.log('[clarity] wellness sample keys:', Object.keys(sample));
+      console.log('[clarity] wellness sample weight fields:', JSON.stringify(
+        Object.fromEntries(Object.entries(sample).filter(([k]) => k.toLowerCase().includes('weight')))
+      ));
+    }
+    return data;
   } catch { return []; }
 }
 
