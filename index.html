@@ -672,47 +672,10 @@ function delPass(id) {
 async function fetchWellness() {
   const to   = toISO(new Date());
   const from = toISO(daysAgo(28));
-  const auth = { Authorization: 'Basic ' + btoa('API_KEY:' + C.key) };
   const url  = `https://intervals.icu/api/v1/athlete/${C.id}/wellness?oldest=${from}&newest=${to}`;
   try {
-    const r = await fetch(url, { headers: auth });
-    const data = await r.json();
-
-    // Debug: log today's wellness entry to see all non-null fields
-    if (Array.isArray(data) && data.length) {
-      const today = toISO(new Date());
-      const todayEntry = data.find(d => d.id === today) || data[data.length - 1];
-      const nonNull = Object.fromEntries(Object.entries(todayEntry).filter(([,v]) => v != null && v !== false));
-      console.log('[clarity] today wellness non-null:', JSON.stringify(nonNull));
-    }
-
-    // Debug: probe athlete profile for weight
-    try {
-      const profR = await fetch(
-        `https://intervals.icu/api/v1/athlete/${C.id}`,
-        { headers: auth }
-      );
-      const prof = await profR.json();
-      const weightFields = Object.fromEntries(
-        Object.entries(prof).filter(([k]) => k.toLowerCase().includes('weight') || k.toLowerCase().includes('kg'))
-      );
-      console.log('[clarity] athlete profile weight fields:', JSON.stringify(weightFields));
-      console.log('[clarity] athlete profile keys:', Object.keys(prof).join(', '));
-    } catch(e) { console.log('[clarity] athlete endpoint error:', e.message); }
-
-    // Debug: fetch with +1 day buffer to catch timezone edge cases
-    try {
-      const tomorrow = toISO(new Date(Date.now() + 86400000));
-      const r2 = await fetch(
-        `https://intervals.icu/api/v1/athlete/${C.id}/wellness?oldest=${from}&newest=${tomorrow}`,
-        { headers: auth }
-      );
-      const d2 = await r2.json();
-      const withWeight = Array.isArray(d2) ? d2.filter(e => e.weight != null) : [];
-      console.log('[clarity] entries with non-null weight:', JSON.stringify(withWeight).substring(0, 300));
-    } catch(e) { console.log('[clarity] extra wellness fetch error:', e.message); }
-
-    return data;
+    const r = await fetch(url, { headers: { Authorization: 'Basic ' + btoa('API_KEY:' + C.key) } });
+    return await r.json();
   } catch { return []; }
 }
 
@@ -1379,3 +1342,16 @@ async function boot() {
 
   if (!getOAIKey()) {
     openSettings(); // first run — prompt for key
+  } else {
+    renderBrief(false);
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+
+boot();
+</script>
+</body>
+</html>
