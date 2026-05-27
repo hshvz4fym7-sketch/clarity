@@ -672,17 +672,33 @@ function delPass(id) {
 async function fetchWellness() {
   const to   = toISO(new Date());
   const from = toISO(daysAgo(28));
+  const auth = { Authorization: 'Basic ' + btoa('API_KEY:' + C.key) };
   const url  = `https://intervals.icu/api/v1/athlete/${C.id}/wellness?oldest=${from}&newest=${to}`;
   try {
-    const r = await fetch(url, { headers: { Authorization: 'Basic ' + btoa('API_KEY:' + C.key) } });
+    const r = await fetch(url, { headers: auth });
     const data = await r.json();
+
+    // Debug: log today's wellness entry to see all non-null fields
     if (Array.isArray(data) && data.length) {
-      const sample = data.find(d => d.weight != null) || data[data.length - 1];
-      console.log('[clarity] wellness sample keys:', Object.keys(sample));
-      console.log('[clarity] wellness sample weight fields:', JSON.stringify(
-        Object.fromEntries(Object.entries(sample).filter(([k]) => k.toLowerCase().includes('weight')))
-      ));
+      const today = toISO(new Date());
+      const todayEntry = data.find(d => d.id === today) || data[data.length - 1];
+      const nonNull = Object.fromEntries(Object.entries(todayEntry).filter(([,v]) => v != null && v !== false));
+      console.log('[clarity] today wellness non-null:', JSON.stringify(nonNull));
     }
+
+    // Debug: also probe the events endpoint for weight entries
+    try {
+      const evR = await fetch(
+        `https://intervals.icu/api/v1/athlete/${C.id}/events?oldest=${from}&newest=${to}`,
+        { headers: auth }
+      );
+      const evData = await evR.json();
+      const weightEvs = Array.isArray(evData)
+        ? evData.filter(e => JSON.stringify(e).toLowerCase().includes('weight')).slice(0,3)
+        : evData;
+      console.log('[clarity] weight-related events:', JSON.stringify(weightEvs).substring(0,500));
+    } catch(e) { console.log('[clarity] events endpoint error:', e.message); }
+
     return data;
   } catch { return []; }
 }
