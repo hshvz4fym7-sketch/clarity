@@ -1,4 +1,4 @@
-const CACHE = 'clarity-v1';
+const CACHE = 'clarity-v2';
 const ASSETS = ['./index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
@@ -13,10 +13,14 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Network first for API calls, cache first for assets
-  if (e.request.url.includes('intervals.icu')) {
-    e.respondWith(fetch(e.request).catch(() => new Response('[]', { headers: { 'Content-Type': 'application/json' } })));
-  } else {
-    e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+  const url = e.request.url;
+  // External API calls — always go straight to network, never cache
+  if (url.includes('intervals.icu') || url.includes('openai.com')) {
+    e.respondWith(fetch(e.request).catch(() =>
+      new Response('{"error":"offline"}', { headers: { 'Content-Type': 'application/json' } })
+    ));
+    return;
   }
+  // App assets — cache first
+  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
 });
