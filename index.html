@@ -686,18 +686,31 @@ async function fetchWellness() {
       console.log('[clarity] today wellness non-null:', JSON.stringify(nonNull));
     }
 
-    // Debug: also probe the events endpoint for weight entries
+    // Debug: probe athlete profile for weight
     try {
-      const evR = await fetch(
-        `https://intervals.icu/api/v1/athlete/${C.id}/events?oldest=${from}&newest=${to}`,
+      const profR = await fetch(
+        `https://intervals.icu/api/v1/athlete/${C.id}`,
         { headers: auth }
       );
-      const evData = await evR.json();
-      const weightEvs = Array.isArray(evData)
-        ? evData.filter(e => JSON.stringify(e).toLowerCase().includes('weight')).slice(0,3)
-        : evData;
-      console.log('[clarity] weight-related events:', JSON.stringify(weightEvs).substring(0,500));
-    } catch(e) { console.log('[clarity] events endpoint error:', e.message); }
+      const prof = await profR.json();
+      const weightFields = Object.fromEntries(
+        Object.entries(prof).filter(([k]) => k.toLowerCase().includes('weight') || k.toLowerCase().includes('kg'))
+      );
+      console.log('[clarity] athlete profile weight fields:', JSON.stringify(weightFields));
+      console.log('[clarity] athlete profile keys:', Object.keys(prof).join(', '));
+    } catch(e) { console.log('[clarity] athlete endpoint error:', e.message); }
+
+    // Debug: fetch with +1 day buffer to catch timezone edge cases
+    try {
+      const tomorrow = toISO(new Date(Date.now() + 86400000));
+      const r2 = await fetch(
+        `https://intervals.icu/api/v1/athlete/${C.id}/wellness?oldest=${from}&newest=${tomorrow}`,
+        { headers: auth }
+      );
+      const d2 = await r2.json();
+      const withWeight = Array.isArray(d2) ? d2.filter(e => e.weight != null) : [];
+      console.log('[clarity] entries with non-null weight:', JSON.stringify(withWeight).substring(0, 300));
+    } catch(e) { console.log('[clarity] extra wellness fetch error:', e.message); }
 
     return data;
   } catch { return []; }
@@ -1366,16 +1379,3 @@ async function boot() {
 
   if (!getOAIKey()) {
     openSettings(); // first run — prompt for key
-  } else {
-    renderBrief(false);
-  }
-}
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
-}
-
-boot();
-</script>
-</body>
-</html>
