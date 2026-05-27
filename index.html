@@ -703,10 +703,14 @@ ${recentD || 'None logged'}`;
       })
     });
     const data = await res.json();
+    if (!res.ok) {
+      const msg = data?.error?.message || `HTTP ${res.status}`;
+      return `⚠️ ${msg}`;
+    }
     const text = data.choices?.[0]?.message?.content?.trim() || null;
     if (text) localStorage.setItem(cacheKey, text);
     return text;
-  } catch { return null; }
+  } catch (e) { return `⚠️ Network error — ${e.message}`; }
 }
 
 async function renderBrief(force) {
