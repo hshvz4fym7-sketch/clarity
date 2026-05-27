@@ -696,7 +696,7 @@ ${recentD || 'None logged'}`;
       method: 'POST',
       headers: { 'Authorization': `Bearer ${getOAIKey()}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.4-mini',
         max_tokens: 130,
         temperature: 0.7,
         messages: [{ role: 'user', content: prompt }]
