@@ -1,0 +1,17 @@
+{
+  "name": "Clarity",
+  "short_name": "Clarity",
+  "description": "Habit & wellness tracker",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F0F4FF",
+  "theme_color": "#4F46E5",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
