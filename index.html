@@ -197,6 +197,18 @@
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
     }
+    .btn-pass {
+      background: var(--green-light);
+      color: #065F46;
+      border: none;
+      border-radius: 22px;
+      padding: 9px 18px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .badge-green { background: var(--green-light); color: #065F46; }
 
     .drink-entry {
       background: var(--card);
@@ -406,6 +418,7 @@
         <div class="hero-day" id="hero-day">--</div>
         <div class="hero-sub" id="hero-sub">Loading...</div>
         <div class="milestone-row" id="milestone-row"></div>
+        <div id="target-weeks-row" style="margin-top:10px;font-size:12px;opacity:0.75;min-height:16px"></div>
       </div>
 
       <div class="brief-card">
@@ -452,7 +465,10 @@
     <section id="tab-log" class="tab">
       <div class="tab-header">
         <h2>Drink Log</h2>
-        <button class="btn-add" onclick="openModal()">+ Log</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn-pass" onclick="logPass()">✓ Passed</button>
+          <button class="btn-add" onclick="openModal()">+ Log</button>
+        </div>
       </div>
       <div id="drink-list"></div>
     </section>
@@ -574,9 +590,46 @@ const MILESTONES = [
   { days: 90, label: '3 months',    note: 'Life-changing territory' },
 ];
 
+const DAY_FACTS = {
+  1:  'Blood alcohol fully cleared',
+  2:  'Liver starting to process backed-up fats',
+  3:  'Acetaldehyde gone — no longer clouding your sleep',
+  4:  'Liver processing fats more efficiently',
+  5:  'Dopamine receptors beginning to recalibrate',
+  6:  'REM cycles lengthening — dreams getting vivid',
+  7:  'HRV uptick expected — sleep quality at a measurable high',
+  8:  'Skin hydration recovering as kidneys recalibrate',
+  9:  'Blood pressure trending down noticeably',
+  10: 'Gut microbiome diversity starting to recover',
+  11: 'Cortisol stabilising — background anxiety tends to ease',
+  12: 'Energy metabolism running more cleanly',
+  13: 'Liver fat starting to reduce meaningfully',
+  14: 'Two full weeks — liver getting a genuine rest',
+  15: 'Immune function measurably improved',
+  16: 'Deeper sleep stages lengthening further',
+  17: 'Triglyceride levels dropping',
+  18: 'Skin tone visibly improving',
+  19: 'Cognitive clarity sharper — reaction times faster',
+  20: 'Body composition shifting — fat metabolism up',
+  21: 'Three weeks — habits forming at a neurological level',
+  22: 'Blood sugar regulation improving',
+  23: 'HRV trending upward as heart recovers',
+  24: 'Liver enzymes approaching normal range',
+  25: 'Calorie deficit from not drinking is compounding',
+  26: 'Sleep architecture almost fully restored',
+  27: 'Pancreatic function improving',
+  28: 'Four weeks — meaningful metabolic reset complete',
+  30: 'One month — real sustained change in body chemistry',
+  45: 'Six weeks — cardiovascular risk measurably reduced',
+  60: 'Two months — weight loss typically accelerates now',
+  75: 'Ten weeks — blood panels looking significantly better',
+  90: 'Three months — life-changing territory',
+};
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let wellness = [];
 let drinks   = [];
+let passes   = [];
 let chart    = null;
 let stepN    = 2;
 let ctx      = 'social';
@@ -596,6 +649,24 @@ function loadDrinks() {
 }
 function persist(d) { localStorage.setItem('clarity_v2', JSON.stringify(d)); }
 function uid()       { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+function loadPasses() {
+  const s = localStorage.getItem('clarity_passes');
+  return s ? JSON.parse(s) : [];
+}
+function persistPasses() { localStorage.setItem('clarity_passes', JSON.stringify(passes)); }
+function logPass() {
+  passes.push({ id: uid(), date: toISO(new Date()) });
+  persistPasses();
+  toast('Pass logged — that counts ✓');
+  renderLog(); renderHome(); renderInsights();
+}
+function delPass(id) {
+  passes = passes.filter(p => p.id !== id);
+  persistPasses();
+  renderLog(); renderHome(); renderInsights();
+  toast('Removed');
+}
 
 // ── API ───────────────────────────────────────────────────────────────────────
 async function fetchWellness() {
@@ -640,18 +711,83 @@ function lastDrinkDays() {
   return daysBetween(last, today);
 }
 
+// ── Weeks on target (≤2 drink sessions per week) ──────────────────────────────
+function weeksOnTarget() {
+  const getMonday = d => {
+    const nd = new Date(d); nd.setHours(0,0,0,0);
+    const day = nd.getDay();
+    nd.setDate(nd.getDate() - (day === 0 ? 6 : day - 1));
+    return nd;
+  };
+  const results = [];
+  let wStart = getMonday(new Date(C.start + 'T00:00:00'));
+  const today = new Date(); today.setHours(0,0,0,0);
+  while (wStart <= today) {
+    const wEnd = new Date(wStart); wEnd.setDate(wEnd.getDate() + 6);
+    const ws = toISO(wStart), we = toISO(wEnd);
+    const count = drinks.filter(d => !d.base && d.date >= ws && d.date <= we).length;
+    results.push(count <= 2);
+    wStart.setDate(wStart.getDate() + 7);
+  }
+  let streak = 0;
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (results[i]) streak++;
+    else break;
+  }
+  return { streak, total: results.filter(Boolean).length, of: results.length };
+}
+
+// ── Start vs now ──────────────────────────────────────────────────────────────
+function startVsNow() {
+  const sorted = [...wellness].sort((a,b) => a.id.localeCompare(b.id));
+  if (sorted.length < 6) return null;
+  const first = sorted.slice(0, 3);
+  const last  = sorted.slice(-3);
+  const avg = (arr, key) => {
+    const vals = arr.map(w => w[key]).filter(v => v != null);
+    return vals.length ? vals.reduce((a,b) => a+b, 0) / vals.length : null;
+  };
+  return {
+    hrv:    { then: avg(first, 'hrv'),       now: avg(last, 'hrv') },
+    sleep:  { then: avg(first, 'sleepSecs'),  now: avg(last, 'sleepSecs') },
+    weight: { then: avg(first, 'weight'),     now: avg(last, 'weight') },
+  };
+}
+
+// ── Weekly drink pattern ───────────────────────────────────────────────────────
+function weeklyDrinkPattern() {
+  const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const counts = [0,0,0,0,0,0,0];
+  drinks.filter(d => !d.base).forEach(d => {
+    const dow = new Date(d.date + 'T12:00:00').getDay();
+    const idx = dow === 0 ? 6 : dow - 1;
+    counts[idx]++;
+  });
+  return days.map((name, i) => ({ name, count: counts[i] }));
+}
+
 // ── Milestones ────────────────────────────────────────────────────────────────
 function renderMilestone() {
   const ago = lastDrinkDays() || 0;
   const next = MILESTONES.find(m => m.days > ago);
   const el   = document.getElementById('milestone-row');
-  if (!next || !el) return;
+  if (!el) return;
+
+  // Find the closest day fact — exact match first, then nearest day below
+  const factDay = Object.keys(DAY_FACTS).map(Number).filter(d => d <= ago).sort((a,b) => b-a)[0];
+  const fact    = factDay != null ? DAY_FACTS[factDay] : null;
+
+  if (!next) {
+    el.innerHTML = fact ? `<div class="milestone-label">Day ${ago}: ${fact}</div>` : '';
+    return;
+  }
   const prev = MILESTONES[MILESTONES.indexOf(next) - 1];
   const from = prev ? prev.days : 0;
   const pct  = Math.min(100, Math.round(((ago - from) / (next.days - from)) * 100));
   const daysLeft = next.days - ago;
   el.innerHTML = `
-    <div class="milestone-label">${daysLeft === 1 ? 'Tomorrow' : daysLeft + ' days'}: ${next.label} — ${next.note}</div>
+    ${fact ? `<div class="milestone-label" style="opacity:0.9;margin-bottom:4px">Day ${ago}: ${fact}</div>` : ''}
+    <div class="milestone-label">${daysLeft === 1 ? 'Tomorrow' : daysLeft + ' days'}: ${next.label}</div>
     <div class="milestone-bg"><div class="milestone-fill" style="width:${pct}%"></div></div>`;
 }
 
@@ -748,7 +884,22 @@ function renderHome() {
     document.getElementById('hero-sub').textContent = 'Log a session to start tracking';
   } else if (ago === 0) {
     document.getElementById('hero-day').textContent = '0';
-    document.getElementById('hero-sub').textContent = 'You drank today — fresh start tomorrow';
+    // Show how long the clean streak was before tonight
+    const sorted = [...drinks].sort((a,b) => b.date.localeCompare(a.date));
+    let subMsg = 'Fresh start tomorrow';
+    if (sorted.length >= 2) {
+      const d1 = new Date(sorted[1].date + 'T00:00:00');
+      const d2 = new Date(sorted[0].date + 'T00:00:00');
+      const cleanDays = daysBetween(d1, d2) - 1;
+      if (cleanDays >= 3) {
+        subMsg = `${cleanDays} clean days before tonight — still well ahead of baseline`;
+      } else if (cleanDays === 2) {
+        subMsg = 'Two clean days before tonight — this is not starting over';
+      } else if (cleanDays === 1) {
+        subMsg = 'One clean day before tonight — tomorrow is what counts';
+      }
+    }
+    document.getElementById('hero-sub').textContent = subMsg;
   } else if (ago === 1) {
     document.getElementById('hero-day').textContent = '1';
     document.getElementById('hero-sub').textContent = 'Last drink was last night — first clean morning';
@@ -780,23 +931,42 @@ function renderHome() {
     sel.className   = 'metric-delta ' + (sd >= 0 ? 'up' : 'down');
   }
 
-  // Weight
-  const weight  = todayW?.weight || yesterW?.weight;
-  const prevW   = wellness.find(w => w.id === toISO(daysAgo(7)))?.weight;
-  document.getElementById('m-weight').textContent = weight ? weight.toFixed(1) + '' : '--';
+  // Weight — use most recent recorded value, not just today/yesterday
+  const recentWeightW = [...wellness].filter(w => w.weight != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+  const weight = recentWeightW?.weight;
+  const sevenAgoISO = toISO(daysAgo(7));
+  const prevWeightW = [...wellness].filter(w => w.weight != null && w.id <= sevenAgoISO).sort((a,b) => b.id.localeCompare(a.id))[0];
+  const prevW = prevWeightW?.weight;
+  document.getElementById('m-weight').textContent = weight ? weight.toFixed(1) : '--';
   const wEl = document.getElementById('m-weight-d');
   if (weight && prevW) {
     const wd = (weight - prevW).toFixed(1);
     wEl.textContent = (wd <= 0 ? '↓ ' : '↑ ') + Math.abs(wd) + 'kg vs 7d';
-    wEl.className   = 'metric-delta ' + (wd <= 0 ? 'up' : 'down'); // down = good for weight
+    wEl.className   = 'metric-delta ' + (wd <= 0 ? 'up' : 'down');
+  } else if (weight && recentWeightW) {
+    const daysOld = daysBetween(new Date(recentWeightW.id + 'T00:00:00'), new Date());
+    wEl.textContent = daysOld === 0 ? 'today' : daysOld === 1 ? 'yesterday' : daysOld + 'd ago';
+    wEl.className   = 'metric-delta neu';
   } else {
-    wEl.textContent = 'kg';
+    wEl.textContent = 'no data';
+    wEl.className   = 'metric-delta neu';
   }
 
   // Savings
   document.getElementById('savings').textContent = '$' + savings();
 
   renderMilestone();
+
+  // Weeks on target + passes
+  const wot = weeksOnTarget();
+  const targetEl = document.getElementById('target-weeks-row');
+  if (targetEl) {
+    const parts = [];
+    if (wot.streak > 0) parts.push(`🎯 ${wot.streak} week${wot.streak !== 1 ? 's' : ''} on target`);
+    if (passes.length > 0) parts.push(`✓ ${passes.length} pass${passes.length !== 1 ? 'es' : ''} logged`);
+    targetEl.textContent = parts.join('  ·  ');
+  }
+
   renderChart();
 }
 
@@ -876,23 +1046,40 @@ function renderChart() {
 // ── Render: Log ───────────────────────────────────────────────────────────────
 function renderLog() {
   const el = document.getElementById('drink-list');
-  if (!drinks.length) {
+  const allEntries = [
+    ...drinks.map(d => ({ ...d, _type: 'drink' })),
+    ...passes.map(p => ({ ...p, _type: 'pass' }))
+  ].sort((a,b) => b.date.localeCompare(a.date));
+
+  if (!allEntries.length) {
     el.innerHTML = `<div class="empty"><div class="empty-icon">📋</div>Nothing logged yet.<br>Tap + Log to add a session.</div>`;
     return;
   }
-  const sorted = [...drinks].sort((a,b) => b.date.localeCompare(a.date));
-  el.innerHTML = sorted.map(d => {
+  el.innerHTML = allEntries.map(entry => {
+    if (entry._type === 'pass') {
+      return `
+        <div class="drink-entry" style="border-left:3px solid var(--green)">
+          <div>
+            <div class="drink-date">${fmtDate(entry.date)}</div>
+            <div class="drink-meta" style="color:var(--green);font-weight:600">Passed on a drink</div>
+          </div>
+          <div class="drink-right">
+            <span class="badge badge-green">pass</span>
+            <button class="btn-del" onclick="delPass('${entry.id}')">✕</button>
+          </div>
+        </div>`;
+    }
     const ctxMap = { social:'Social', celebration:'Celebration', work:'Work event', date:'Date night' };
-    const meta   = [ctxMap[d.ctx]||d.ctx, d.cost ? '$'+d.cost : null, d.note].filter(Boolean).join(' · ');
+    const meta   = [ctxMap[entry.ctx]||entry.ctx, entry.cost ? '$'+entry.cost : null, entry.note].filter(Boolean).join(' · ');
     return `
       <div class="drink-entry">
         <div>
-          <div class="drink-date">${fmtDate(d.date)}</div>
+          <div class="drink-date">${fmtDate(entry.date)}</div>
           <div class="drink-meta">${meta}</div>
         </div>
         <div class="drink-right">
-          ${d.n ? `<span class="badge badge-amber">${d.n} drinks</span>` : ''}
-          ${d.base ? `<span class="badge badge-grey">baseline</span>` : `<button class="btn-del" onclick="del('${d.id}')">✕</button>`}
+          ${entry.n ? `<span class="badge badge-amber">${entry.n} drinks</span>` : ''}
+          ${entry.base ? `<span class="badge badge-grey">baseline</span>` : `<button class="btn-del" onclick="del('${entry.id}')">✕</button>`}
         </div>
       </div>`;
   }).join('');
@@ -902,93 +1089,151 @@ function renderLog() {
 function renderInsights() {
   const drinkNights = new Set(drinks.map(d => d.date));
   const withHRV     = wellness.filter(w => w.hrv != null).sort((a,b) => a.id.localeCompare(b.id));
+  const avgFn = arr => arr.length ? arr.reduce((a,b) => a+b, 0) / arr.length : null;
 
-  // Split HRV readings into after-drinking vs clean mornings
-  const afterDrink = [], clean = [];
-  withHRV.forEach(w => {
-    const prev = new Date(w.id + 'T12:00:00');
-    prev.setDate(prev.getDate() - 1);
-    (drinkNights.has(toISO(prev)) ? afterDrink : clean).push(w.hrv);
+  // ── Drinking vs clean mornings (HRV + Sleep) ──
+  const afterDrinkHRV = [], cleanHRV = [], afterDrinkSleep = [], cleanSleep = [];
+  wellness.forEach(w => {
+    const prev = new Date(w.id + 'T12:00:00'); prev.setDate(prev.getDate() - 1);
+    const wasDrink = drinkNights.has(toISO(prev));
+    if (w.hrv != null)      (wasDrink ? afterDrinkHRV   : cleanHRV).push(w.hrv);
+    if (w.sleepSecs != null)(wasDrink ? afterDrinkSleep : cleanSleep).push(w.sleepSecs / 3600);
   });
-  const avgFn  = arr => arr.length ? arr.reduce((a,b) => a+b, 0) / arr.length : null;
-  const avgAD  = avgFn(afterDrink);
-  const avgCln = avgFn(clean);
+  const avgAD_hrv  = avgFn(afterDrinkHRV),  avgCln_hrv  = avgFn(cleanHRV);
+  const avgAD_slp  = avgFn(afterDrinkSleep), avgCln_slp  = avgFn(cleanSleep);
 
-  // Week summary (past 7 days)
+  let impactCard = '';
+  if (cleanHRV.length >= 3 && afterDrinkHRV.length >= 1) {
+    const hrvDiff = avgAD_hrv && avgCln_hrv ? (avgAD_hrv - avgCln_hrv).toFixed(1) : null;
+    const slpDiff = avgAD_slp && avgCln_slp ? (avgAD_slp - avgCln_slp).toFixed(1) : null;
+    const msg = hrvDiff < 0
+      ? `Drinking knocks ${Math.abs(hrvDiff)} ms off your HRV${slpDiff < 0 ? ` and ${Math.abs(slpDiff)}h off your sleep` : ''} — that's your body in the data.`
+      : 'Keep building clean mornings — the gap will show as data grows.';
+    impactCard = `
+      <div class="insight-card">
+        <div class="insight-title">After drinking vs clean mornings</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+          <div style="text-align:center;padding:10px;background:var(--amber-light);border-radius:12px">
+            <div style="font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">After drinking</div>
+            ${avgAD_hrv ? `<div style="font-size:22px;font-weight:800;color:#92400E">${avgAD_hrv.toFixed(1)} ms</div><div style="font-size:11px;color:#92400E">HRV</div>` : ''}
+            ${avgAD_slp ? `<div style="font-size:18px;font-weight:700;color:#92400E;margin-top:4px">${avgAD_slp.toFixed(1)}h</div><div style="font-size:11px;color:#92400E">sleep</div>` : ''}
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--green-light);border-radius:12px">
+            <div style="font-size:11px;font-weight:700;color:#065F46;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Clean mornings</div>
+            ${avgCln_hrv ? `<div style="font-size:22px;font-weight:800;color:#065F46">${avgCln_hrv.toFixed(1)} ms</div><div style="font-size:11px;color:#065F46">HRV</div>` : ''}
+            ${avgCln_slp ? `<div style="font-size:18px;font-weight:700;color:#065F46;margin-top:4px">${avgCln_slp.toFixed(1)}h</div><div style="font-size:11px;color:#065F46">sleep</div>` : ''}
+          </div>
+        </div>
+        <div class="insight-body" style="margin-top:12px">${msg}</div>
+      </div>`;
+  } else {
+    impactCard = `
+      <div class="insight-card">
+        <div class="insight-title">After drinking vs clean mornings</div>
+        <div class="insight-body" style="margin-top:8px">Needs at least 3 clean-day readings to be meaningful — check the HRV chart on Home for your trend so far.</div>
+      </div>`;
+  }
+
+  // ── Start vs now ──
+  const svn = startVsNow();
+  let startNowCard = '';
+  if (svn) {
+    const row = (label, then, now, fmt, goodIfDown) => {
+      if (!then || !now) return '';
+      const diff = now - then;
+      const good = goodIfDown ? diff < 0 : diff > 0;
+      const sign = diff >= 0 ? '+' : '';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--subtext);font-weight:600">${label}</span>
+        <div style="text-align:right">
+          <span style="font-size:15px;font-weight:800;color:var(--text)">${fmt(now)}</span>
+          <span style="font-size:12px;font-weight:600;margin-left:8px;color:${good ? 'var(--green)' : 'var(--amber)'}">${sign}${fmt(diff)}</span>
+        </div>
+      </div>`;
+    };
+    const fmtHrv = v => v.toFixed(1) + ' ms';
+    const fmtSlp = v => (v/3600).toFixed(1) + 'h';
+    const fmtWt  = v => v.toFixed(1) + ' kg';
+    const rows = [
+      row('HRV',    svn.hrv.then,    svn.hrv.now,    fmtHrv, false),
+      row('Sleep',  svn.sleep.then,  svn.sleep.now,  fmtSlp, false),
+      row('Weight', svn.weight.then, svn.weight.now, fmtWt,  true),
+    ].filter(Boolean).join('');
+    if (rows) {
+      startNowCard = `
+        <div class="insight-card">
+          <div class="insight-title">Since you started</div>
+          <div class="insight-body" style="margin-bottom:10px">First 3 days vs most recent 3 days</div>
+          ${rows}
+        </div>`;
+    }
+  }
+
+  // ── Weekly pattern ──
+  const pattern = weeklyDrinkPattern();
+  const maxCount = Math.max(...pattern.map(p => p.count), 1);
+  const patternBars = pattern.map(p => {
+    const pct = Math.round((p.count / maxCount) * 100);
+    const isWeekend = p.name === 'Fri' || p.name === 'Sat' || p.name === 'Sun';
+    const col = p.count > 0 ? (isWeekend ? 'var(--primary)' : 'var(--amber)') : 'var(--border)';
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+      <div style="font-size:11px;font-weight:700;color:${p.count > 0 ? 'var(--text)' : 'var(--subtext)'}">${p.count || ''}</div>
+      <div style="width:100%;height:48px;background:var(--bg);border-radius:6px;display:flex;align-items:flex-end;overflow:hidden">
+        <div style="width:100%;height:${pct}%;background:${col};border-radius:6px;transition:height 0.4s"></div>
+      </div>
+      <div style="font-size:10px;font-weight:600;color:var(--subtext)">${p.name}</div>
+    </div>`;
+  }).join('');
+  const weekdayDrinks = pattern.slice(0,4).reduce((s,p) => s + p.count, 0);
+  const patternNote = weekdayDrinks === 0
+    ? 'All sessions on weekends — exactly on target.'
+    : `${weekdayDrinks} weekday session${weekdayDrinks !== 1 ? 's' : ''} in the mix — something to watch.`;
+  const patternCard = `
+    <div class="insight-card">
+      <div class="insight-title">When you drink</div>
+      <div style="display:flex;gap:6px;margin:14px 0 10px">${patternBars}</div>
+      <div class="insight-body">${patternNote}</div>
+    </div>`;
+
+  // ── This week ──
   const weekAgoStr  = toISO(daysAgo(7));
   const twoWeeksStr = toISO(daysAgo(14));
   const thisWeekHRV = withHRV.filter(w => w.id >= weekAgoStr);
   const lastWeekHRV = withHRV.filter(w => w.id >= twoWeeksStr && w.id < weekAgoStr);
   const drinkThisWeek = [...drinkNights].filter(d => d >= weekAgoStr).length;
+  const avgThis = avgFn(thisWeekHRV.map(w => w.hrv));
+  const avgLast = avgFn(lastWeekHRV.map(w => w.hrv));
+  let weekCompare = avgThis && avgLast
+    ? `<div class="insight-body" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        Last week avg: <strong>${avgLast.toFixed(1)} ms</strong> — HRV is <span class="${avgThis >= avgLast ? 'up' : 'down'}">${avgThis >= avgLast ? '↑' : '↓'} ${Math.abs(avgThis - avgLast).toFixed(1)} ms</span> this week.
+       </div>`
+    : '';
 
-  const avgThis = avgFn(thisWeekHRV);
-  const avgLast = avgFn(lastWeekHRV);
-
+  const wot = weeksOnTarget();
   const annualSave = (C.baseline * 52).toLocaleString();
 
-  // HRV comparison — only show when there's real clean-day data (3+ readings)
-  let hrvCard = '';
-  if (clean.length >= 3 && avgAD) {
-    const diff    = ((avgAD - avgCln) / avgCln * 100).toFixed(0);
-    const impact  = diff < 0
-      ? `Drinking suppresses your HRV by ${Math.abs(diff)}% — your body is telling you something.`
-      : `The gap is still closing — keep building clean-day mornings.`;
-    hrvCard = `
-      <div class="insight-card">
-        <div class="insight-title">Drinking vs clean mornings</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
-          <div>
-            <div class="insight-stat" style="font-size:26px;color:var(--amber)">${avgAD.toFixed(1)} ms</div>
-            <div class="insight-body" style="font-size:12px">avg after drinking</div>
-          </div>
-          <div>
-            <div class="insight-stat" style="font-size:26px;color:var(--green)">${avgCln.toFixed(1)} ms</div>
-            <div class="insight-body" style="font-size:12px">avg clean morning</div>
-          </div>
-        </div>
-        <div class="insight-body" style="margin-top:10px">${impact}</div>
-      </div>`;
-  } else {
-    hrvCard = `
-      <div class="insight-card">
-        <div class="insight-title">Drinking vs clean mornings</div>
-        <div class="insight-body" style="margin-top:8px">
-          Not enough clean-day data yet — this comparison needs at least 3 alcohol-free mornings to be meaningful.
-          Check the HRV chart on home to see your trend so far.
-        </div>
-      </div>`;
-  }
-
-  // Week-on-week comparison
-  let weekCompare = '';
-  if (avgThis && avgLast) {
-    const diff = (avgThis - avgLast).toFixed(1);
-    const cls  = diff >= 0 ? 'up' : 'down';
-    const dir  = diff >= 0 ? 'up' : 'down';
-    weekCompare = `<div class="insight-body" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      Last week avg: <strong>${avgLast.toFixed(1)} ms</strong> — HRV is <span class="${cls}">${dir} ${Math.abs(diff)} ms</span> this week.
-    </div>`;
-  } else {
-    weekCompare = `<div class="insight-body" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);color:var(--subtext)">
-      Week-on-week comparison available after 14 days — back next week.
-    </div>`;
-  }
-
   document.getElementById('insights-body').innerHTML = `
-    ${hrvCard}
+    ${impactCard}
+    ${startNowCard}
+    ${patternCard}
 
     <div class="insight-card">
       <div class="insight-title">This week</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:14px">
         <div>
-          <div class="insight-stat" style="font-size:30px">${drinkThisWeek}</div>
-          <div class="insight-body">drink session${drinkThisWeek !== 1 ? 's' : ''}</div>
+          <div class="insight-stat" style="font-size:28px">${drinkThisWeek}</div>
+          <div class="insight-body">session${drinkThisWeek !== 1 ? 's' : ''}</div>
         </div>
         <div>
-          <div class="insight-stat" style="font-size:30px;color:${avgThis ? 'var(--green)' : 'var(--subtext)'}">${avgThis ? avgThis.toFixed(1) : '--'}</div>
-          <div class="insight-body">avg HRV ms</div>
+          <div class="insight-stat" style="font-size:28px;color:var(--green)">${passes.length}</div>
+          <div class="insight-body">passes</div>
+        </div>
+        <div>
+          <div class="insight-stat" style="font-size:28px;color:${avgThis ? 'var(--primary)' : 'var(--subtext)'}">${avgThis ? avgThis.toFixed(0) : '--'}</div>
+          <div class="insight-body">avg HRV</div>
         </div>
       </div>
+      <div class="insight-body" style="margin-top:10px">${wot.streak > 0 ? `🎯 ${wot.streak} consecutive week${wot.streak !== 1 ? 's' : ''} on target (≤2 sessions).` : 'A week on target means 2 or fewer sessions.'}</div>
       ${weekCompare}
     </div>
 
@@ -1089,6 +1334,7 @@ function toast(msg) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function boot() {
   drinks  = loadDrinks();
+  passes  = loadPasses();
   renderHome(); renderLog();
 
   wellness = await fetchWellness();
