@@ -1,4 +1,4 @@
-const CACHE = 'clarity-v10';
+const CACHE = 'clarity-v13';
 const ASSETS = ['./index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
@@ -7,9 +7,11 @@ self.addEventListener('install', e => {
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys =>
-    Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-  ));
+  e.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(() => clients.claim())
+  );
 });
 
 self.addEventListener('fetch', e => {
@@ -21,6 +23,14 @@ self.addEventListener('fetch', e => {
     ));
     return;
   }
-  // App assets — cache first
-  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+  // App assets — network first, fall back to cache
+  e.respondWith(
+    fetch(e.request)
+      .then(r => {
+        const clone = r.clone();
+        caches.open(CACHE).then(c => c.put(e.request, clone));
+        return r;
+      })
+      .catch(() => caches.match(e.request))
+  );
 });
