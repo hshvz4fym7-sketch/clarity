@@ -10,7 +10,7 @@
   <title>Clarity</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon.svg">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <script async src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -696,6 +696,9 @@ function delPass(id) {
 
 // ── Google Health OAuth ───────────────────────────────────────────────────────
 function startGoogleAuth() {
+  // Save secret from field if typed but not yet saved
+  const fieldVal = document.getElementById('f-gh-secret')?.value?.trim();
+  if (fieldVal && !fieldVal.startsWith('••')) setGHSecret(fieldVal);
   if (!getGHSecret()) { toast('Enter your client secret first'); return; }
   const p = new URLSearchParams({
     client_id: GH_CLIENT_ID, redirect_uri: GH_REDIRECT,
@@ -1126,6 +1129,7 @@ function renderHome() {
 
 // ── Render: Chart ─────────────────────────────────────────────────────────────
 function renderChart() {
+  if (typeof Chart === 'undefined') return; // Chart.js still loading
   const pts = wellness
     .filter(w => w.hrv != null)
     .sort((a,b) => a.id.localeCompare(b.id))
