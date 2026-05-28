@@ -432,6 +432,7 @@
           <div class="metric-value" id="m-hrv">--</div>
           <div class="metric-label">HRV ms</div>
           <div class="metric-delta neu" id="m-hrv-d"></div>
+          <div class="metric-delta neu" id="m-rhr" style="margin-top:2px"></div>
         </div>
         <div class="metric-card">
           <div class="metric-value" id="m-sleep">--</div>
@@ -442,6 +443,7 @@
           <div class="metric-value" id="m-weight">--</div>
           <div class="metric-label">Weight</div>
           <div class="metric-delta neu" id="m-weight-d"></div>
+          <div class="metric-delta neu" id="m-bf" style="margin-top:2px"></div>
         </div>
       </div>
 
@@ -834,6 +836,8 @@ async function fetchWellness() {
     ensure(d);
     const ms = data?.averageHeartRateVariabilityMilliseconds;
     if (ms != null) byDate[d].hrv = ms;
+    const rhr = data?.nonRemHeartRateBeatsPerMinute;
+    if (rhr != null) byDate[d].restingHR = parseInt(rhr);
   }
 
   // Sleep: date from interval.endTime + endUtcOffset (local wake-up date)
@@ -848,6 +852,17 @@ async function fetchWellness() {
     ensure(d);
     const secs = parseInt(data.summary?.minutesAsleep || 0) * 60;
     if (secs > 3600) byDate[d].sleepSecs = Math.max(byDate[d].sleepSecs || 0, secs);
+    // Stages — API response duplicates the array, use Set to deduplicate by type
+    const stages = data.summary?.stagesSummary;
+    if (Array.isArray(stages)) {
+      const seen = new Set();
+      for (const s of stages) {
+        if (!s.type || seen.has(s.type)) continue;
+        seen.add(s.type);
+        if (s.type === 'DEEP') byDate[d].sleepDeepMins = (byDate[d].sleepDeepMins || 0) + (s.minutes || 0);
+        if (s.type === 'REM')  byDate[d].sleepRemMins  = (byDate[d].sleepRemMins  || 0) + (s.minutes || 0);
+      }
+    }
   }
 
   return Object.values(byDate).sort((a, b) => a.id.localeCompare(b.id));
@@ -979,7 +994,17 @@ async function fetchAIInsight(force) {
     .filter(w => w.hrv || w.sleepSecs || w.weight)
     .sort((a,b) => a.id.localeCompare(b.id))
     .slice(-7)
-    .map(w => `${w.id}: HRV ${w.hrv ? w.hrv.toFixed(1) : '?'}ms, sleep ${w.sleepSecs ? (w.sleepSecs/3600).toFixed(1) : '?'}h, weight ${w.weight ? w.weight.toFixed(1) + 'kg' : '?'}`)
+    .map(w => {
+      const parts = [
+        `HRV ${w.hrv ? w.hrv.toFixed(1) + 'ms' : '?'}`,
+        w.restingHR ? `resting HR ${w.restingHR}bpm` : null,
+        `sleep ${w.sleepSecs ? (w.sleepSecs/3600).toFixed(1) + 'h' : '?'}`,
+        (w.sleepDeepMins || w.sleepRemMins) ? `(deep ${w.sleepDeepMins || 0}m / REM ${w.sleepRemMins || 0}m)` : null,
+        `weight ${w.weight ? w.weight.toFixed(1) + 'kg' : '?'}`,
+        w.bodyFat ? `body fat ${w.bodyFat.toFixed(1)}%` : null,
+      ].filter(Boolean);
+      return `${w.id}: ${parts.join(', ')}`;
+    })
     .join('\n');
 
   const recentD = [...drinks]
@@ -1083,7 +1108,8 @@ function renderHome() {
   }
 
   // HRV
-  const hrv = todayW?.hrv;
+  const recentHrvW = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+  const hrv = recentHrvW?.hrv;
   document.getElementById('m-hrv').textContent = hrv ? hrv.toFixed(1) : '--';
   if (hrv && yesterW?.hrv) {
     const d = hrv - yesterW.hrv;
@@ -1091,7 +1117,13 @@ function renderHome() {
     el.textContent = (d >= 0 ? '↑ ' : '↓ ') + Math.abs(d).toFixed(1) + ' vs yesterday';
     el.className   = 'metric-delta ' + (d >= 0 ? 'up' : 'down');
   } else {
-    document.getElementById('m-hrv-d').textContent = 'Syncing...';
+    document.getElementById('m-hrv-d').textContent = hrv ? '' : 'Syncing...';
+  }
+  // Resting HR (from HRV data point)
+  const rhrEl = document.getElementById('m-rhr');
+  if (rhrEl) {
+    const recentRhrW = [...wellness].filter(w => w.restingHR != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+    rhrEl.textContent = recentRhrW?.restingHR ? recentRhrW.restingHR + ' bpm resting' : '';
   }
 
   // Sleep
@@ -1124,6 +1156,12 @@ function renderHome() {
   } else {
     wEl.textContent = 'no data';
     wEl.className   = 'metric-delta neu';
+  }
+  // Body fat %
+  const bfEl = document.getElementById('m-bf');
+  if (bfEl) {
+    const recentBfW = [...wellness].filter(w => w.bodyFat != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+    bfEl.textContent = recentBfW?.bodyFat != null ? recentBfW.bodyFat.toFixed(1) + '% body fat' : '';
   }
 
   // Savings
