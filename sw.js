@@ -1,4 +1,4 @@
-const CACHE = 'clarity-v9';
+const CACHE = 'clarity-v10';
 const ASSETS = ['./index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
@@ -15,7 +15,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = e.request.url;
   // External API calls — always go straight to network, never cache
-  if (url.includes('intervals.icu') || url.includes('openai.com')) {
+  if (url.includes('googleapis.com') || url.includes('accounts.google.com') || url.includes('openai.com')) {
     e.respondWith(fetch(e.request).catch(() =>
       new Response('{"error":"offline"}', { headers: { 'Content-Type': 'application/json' } })
     ));
