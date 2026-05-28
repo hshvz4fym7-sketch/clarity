@@ -33,6 +33,7 @@
 
     html, body {
       height: 100%;
+      overflow: hidden;
       background: var(--bg);
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
       color: var(--text);
@@ -64,6 +65,7 @@
     /* ── Content ── */
     .app-content {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
@@ -285,6 +287,9 @@
       border-top: 1px solid var(--border);
       padding: 8px 0 calc(var(--safe-bottom) + 8px);
       flex-shrink: 0;
+      position: sticky;
+      bottom: 0;
+      z-index: 10;
     }
     .nav-btn {
       flex: 1;
@@ -793,6 +798,43 @@ function showGHStatus() {
   const lines = Object.entries(ghLastStatus).map(([k,v]) => `${k}: ${v}`).join('\n');
   alert(lines || 'No API calls made yet — is Google Health connected?');
 }
+
+// ── Dev probe — call probeCardioTypes() from the browser console once ─────────
+window.probeCardioTypes = async function() {
+  const token = await getValidGHToken();
+  if (!token) { console.error('[probe] No valid token'); return; }
+  const candidates = [
+    'cardio-fitness',
+    'active-zone-minutes',
+    'heart-points',
+    'daily-activity-summary',
+    'cardio-load',
+    'training-load',
+    'active-minutes',
+    'calories-expended',
+    'vo2-max',
+    'fitness-score',
+  ];
+  console.log('[probe] Testing', candidates.length, 'data types...');
+  for (const type of candidates) {
+    try {
+      const r = await fetch(
+        `https://health.googleapis.com/v4/users/me/dataTypes/${type}/dataPoints:reconcile`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const body = await r.json();
+      if (r.ok) {
+        const pts = body.dataPoints || [];
+        console.log(`[probe] ✓ ${type} — ${pts.length} point(s)`, pts[0] ? pts[0] : '');
+      } else {
+        console.log(`[probe] ✗ ${type} — ${r.status}:`, body?.error?.message || JSON.stringify(body).slice(0, 80));
+      }
+    } catch(e) {
+      console.log(`[probe] ✗ ${type} — ${e.message}`);
+    }
+  }
+  console.log('[probe] Done');
+};
 
 async function fetchWellness() {
   const token = await getValidGHToken();
