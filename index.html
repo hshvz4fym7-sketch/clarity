@@ -568,6 +568,7 @@
     </div>
 
     <button class="btn-primary" onclick="saveSettings()">Save</button>
+    <button onclick="showGHStatus()" style="display:block;width:100%;margin-top:10px;padding:12px;background:none;border:1.5px solid var(--border);border-radius:10px;color:var(--subtext);font-size:14px;cursor:pointer">Show API status</button>
     <button onclick="closeSettings()" style="display:block;width:100%;margin-top:10px;padding:12px;background:none;border:none;color:var(--subtext);font-size:15px;cursor:pointer">Cancel</button>
   </div>
 </div>
@@ -755,15 +756,33 @@ async function getValidGHToken() {
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
+let ghLastStatus = {};
+
 async function ghFetch(token, dataType, startISO, endISO) {
   try {
     const url = `https://health.googleapis.com/v4/users/-/dataTypes/${dataType}/dataPoints:reconcile` +
       `?startTime=${encodeURIComponent(startISO)}&endTime=${encodeURIComponent(endISO)}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) { console.warn(`[clarity] ${dataType} ${r.status}`); return []; }
+    if (!r.ok) {
+      const errBody = await r.text();
+      ghLastStatus[dataType] = `${r.status}: ${errBody.slice(0, 120)}`;
+      console.warn(`[clarity] ${dataType} ${r.status}:`, errBody);
+      return [];
+    }
     const d = await r.json();
-    return d.dataPoints || [];
-  } catch(e) { console.warn(`[clarity] ${dataType} error:`, e.message); return []; }
+    const pts = d.dataPoints || [];
+    ghLastStatus[dataType] = `OK — ${pts.length} point(s)`;
+    return pts;
+  } catch(e) {
+    ghLastStatus[dataType] = `Error: ${e.message}`;
+    console.warn(`[clarity] ${dataType} error:`, e.message);
+    return [];
+  }
+}
+
+function showGHStatus() {
+  const lines = Object.entries(ghLastStatus).map(([k,v]) => `${k}: ${v}`).join('\n');
+  alert(lines || 'No API calls made yet — is Google Health connected?');
 }
 
 function ptLocalDate(pt) {
@@ -1451,14 +1470,18 @@ function del(id) {
 // ── Settings ──────────────────────────────────────────────────────────────────
 function openSettings() {
   const ghEl = document.getElementById('f-gh-secret');
-  ghEl.value = getGHSecret() ? '••••••••••••••••' : '';
-  ghEl.placeholder = getGHSecret() ? 'Secret saved — paste to replace' : 'GOCSPX-...';
-  document.getElementById('btn-gh-connect').textContent =
-    ghConnected() ? '✓ Connected — Reconnect' : 'Connect Google Health';
+  if (ghEl) {
+    ghEl.value = getGHSecret() ? '••••••••••••••••' : '';
+    ghEl.placeholder = getGHSecret() ? 'Secret saved — paste to replace' : 'GOCSPX-...';
+  }
+  const connectBtn = document.getElementById('btn-gh-connect');
+  if (connectBtn) connectBtn.textContent = ghConnected() ? '✓ Connected — Reconnect' : 'Connect Google Health';
 
   const oaiEl = document.getElementById('f-oai-key');
-  oaiEl.value = getOAIKey() ? '••••••••••••••••' : '';
-  oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
+  if (oaiEl) {
+    oaiEl.value = getOAIKey() ? '••••••••••••••••' : '';
+    oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
+  }
 
   document.getElementById('settings-modal').classList.add('open');
 }
@@ -1510,26 +1533,3 @@ async function boot() {
     if (ok) toast('Google Health connected ✓');
     else    toast('Connection failed — check client secret');
   }
-
-  drinks  = loadDrinks();
-  passes  = loadPasses();
-  renderHome(); renderLog();
-
-  wellness = await fetchWellness();
-  renderHome(); renderInsights();
-
-  if (!getOAIKey()) {
-    openSettings();
-  } else {
-    renderBrief(false);
-  }
-}
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
-}
-
-boot();
-</script>
-</body>
-</html>
