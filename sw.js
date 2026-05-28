@@ -1,4 +1,4 @@
-const CACHE = 'clarity-v28';
+const CACHE = 'clarity-v30';
 const ASSETS = ['./index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
