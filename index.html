@@ -1234,11 +1234,11 @@ async function fetchAIInsight(force) {
   const debt = sleepDebt();
   const sleepDebtContext = `14-night weighted sleep debt: ${debt.toFixed(1)}h vs ${C.sleepTarget}h/night target`;
 
-  // Weight trajectory context
-  const trend = weightTrend(30);
-  const weightTrendContext = trend
-    ? `Weight trend: ${(trend.slope * 7).toFixed(2)} kg/week over 30 days${trend.projDate ? ` — at this pace hit ${C.goal}kg on ${trend.projDate}` : ' — not on track for goal yet'}`
-    : 'Weight trend: insufficient data';
+  // Weight trajectory context — now driven by conditions model, not regression
+  const _trendForPrompt = weightTrend(30);
+  const weightTrendContext = _trendForPrompt
+    ? `Weight regression (30d): ${(_trendForPrompt.slope * 7).toFixed(2)} kg/week`
+    : 'Weight regression: insufficient data (sparse weigh-ins)';
 
   // Body composition context
   const recentCompEntry = [...wellness].filter(w => fatMassKg(w) != null).sort((a,b) => b.id.localeCompare(a.id))[0];
@@ -1262,9 +1262,15 @@ async function fetchAIInsight(force) {
     ? `Training-recovery: on high-HRV days (≥${trCorr.threshold}ms) avg ${trCorr.hiAZM} AZM and ${trCorr.hiFatBurn}m fat burn vs ${trCorr.loAZM} AZM and ${trCorr.loFatBurn}m fat burn on low-HRV days`
     : '';
 
-  const prompt = `You are a direct, encouraging health coach. I am reducing alcohol to social-only drinking to lose 15+ kg, tracking via Pixel Watch 3. Give me exactly 2-3 sentences. Be specific — use my actual numbers. One observation from the data, one actionable thing to focus on today. No generic advice, no preamble.
+  const pace = projectedPace();
+  const paceContext = pace.projDate
+    ? `Goal projection: ${C.goal} kg by ${pace.projDate} (${pace.rate.toFixed(2)} kg/week). Drivers: ${pace.factors.map(f => f.label + (f.dir === 1 ? ' (helping)' : f.dir === -1 ? ' (hurting)' : ' (neutral)')).join(', ')}`
+    : `Goal projection: insufficient weight data for date — estimated pace ${pace.rate.toFixed(2)} kg/week based on current conditions`;
 
-Goal: reach ${C.goal} kg (currently ${trend?.currentW?.toFixed(1) || '?'} kg)
+  const prompt = `You are a direct, encouraging health coach. I am reducing alcohol to social-only drinking to lose 15+ kg, tracking via Pixel Watch 3. Give me exactly 2-3 sentences. Be specific — use my actual numbers. Note if my projected arrival date has meaningfully shifted and name the factor driving it. No generic advice, no preamble.
+
+Goal: reach ${C.goal} kg (currently ${pace.currentW?.toFixed(1) || '?'} kg)
+${paceContext}
 Days since last drink: ${ago === null ? 'unknown' : ago}
 Approach start: ${C.start}
 
@@ -1801,7 +1807,136 @@ function renderVO2Chart() {
 }
 
 // ── Render: Weight Trajectory Chart ──────────────────────────────────────────
-let weightChart = null;
+// ── Projected pace from current conditions ────────────────────────────────────
+// Uses alcohol, AZM, and sleep debt as the three main levers.
+// The model is intentionally opinionated rather than mathematically precise.
+function projectedPace() {
+  const weekAgoStr   = toISO(daysAgo(7));
+  const weeklyDrinks = drinks.filter(d => !d.base && d.date >= weekAgoStr).length;
+  const azm          = weeklyAZM();
+  const debt         = sleepDebt();
+
+  let rate = 0.50; // kg/week baseline — realistic sustained deficit
+  const factors = [];
+
+  // Alcohol: biggest single lever (fat oxidation blocked for 24-48h per session + calories)
+  if (weeklyDrinks === 0) {
+    rate += 0.20;
+    factors.push({ label: 'Alcohol-free week', dir: 1 });
+  } else if (weeklyDrinks === 1) {
+    rate += 0.05;
+    factors.push({ label: '1 session this week', dir: 0 });
+  } else {
+    rate -= 0.10;
+    factors.push({ label: `${weeklyDrinks} sessions this week`, dir: -1 });
+  }
+
+  // Active zone minutes: cardio deficit + fat metabolism improvement
+  if (azm.total >= 150) {
+    rate += 0.15;
+    factors.push({ label: `${azm.total} AZM — target hit`, dir: 1 });
+  } else if (azm.total >= 75) {
+    rate += 0.05;
+    factors.push({ label: `${azm.total} / 150 AZM`, dir: 0 });
+  } else if (azm.total > 0) {
+    factors.push({ label: `${azm.total} / 150 AZM — low`, dir: -1 });
+  }
+
+  // Sleep debt: cortisol suppresses fat burning, increases fat storage
+  if (debt < 2) {
+    rate += 0.10;
+    factors.push({ label: `${debt.toFixed(1)}h sleep debt`, dir: 1 });
+  } else if (debt < 5) {
+    factors.push({ label: `${debt.toFixed(1)}h sleep debt`, dir: 0 });
+  } else {
+    rate -= 0.15;
+    factors.push({ label: `${debt.toFixed(1)}h sleep debt`, dir: -1 });
+  }
+
+  const finalRate  = Math.max(0.1, +rate.toFixed(2));
+  const latestWt   = wellness.filter(w => w.weight != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.weight;
+  const kgToGo     = latestWt != null ? +(latestWt - C.goal).toFixed(1) : null;
+  const daysToGoal = (kgToGo > 0 && finalRate > 0) ? Math.round(kgToGo / (finalRate / 7)) : null;
+  let projDate = null;
+  if (daysToGoal && daysToGoal < 1500) {
+    const d = new Date(); d.setDate(d.getDate() + daysToGoal);
+    projDate = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
+  }
+
+  return { rate: finalRate, factors, kgToGo, projDate, daysToGoal, currentW: latestWt };
+}
+
+// ── Render: Weight Goal Card ──────────────────────────────────────────────────
+function renderWeightGoalCard() {
+  const el = document.getElementById('weight-goal-card');
+  if (!el) return;
+
+  const pace   = projectedPace();
+  const allWt  = wellness.filter(w => w.weight != null).sort((a,b) => a.id.localeCompare(b.id));
+
+  if (!pace.currentW) {
+    el.innerHTML = '<div class="insight-body" style="margin-top:8px">Weigh in to start tracking your goal.</div>';
+    return;
+  }
+
+  const firstW       = allWt[0].weight;
+  const currentW     = pace.currentW;
+  const overallDelta = +(currentW - firstW).toFixed(1);
+  const daysSinceLast = daysBetween(new Date(allWt[allWt.length - 1].id + 'T00:00:00'), new Date());
+
+  // Progress bar: spans from highest recorded weight to goal
+  const maxW  = Math.max(currentW, firstW) + 0.5;
+  const span  = maxW - C.goal;
+  const pct   = Math.max(0, Math.min(96, ((maxW - currentW) / span) * 100));
+
+  // Chips
+  const chipBg   = dir => dir === 1 ? '#D1FAE5' : dir === 0 ? '#FEF3C7' : '#FEE2E2';
+  const chipFg   = dir => dir === 1 ? '#065F46' : dir === 0 ? '#92400E' : '#991B1B';
+  const chipIcon = dir => dir === 1 ? '↑' : dir === 0 ? '→' : '↓';
+  const chips = pace.factors.map(f =>
+    `<span style="display:inline-block;padding:5px 11px;border-radius:20px;font-size:11px;font-weight:600;background:${chipBg(f.dir)};color:${chipFg(f.dir)};margin:3px 3px 3px 0">${chipIcon(f.dir)} ${f.label}</span>`
+  ).join('');
+
+  // Story line
+  const storyParts = [`${allWt.length} reading${allWt.length !== 1 ? 's' : ''} since ${fmtDate(allWt[0].id)}`];
+  if (Math.abs(overallDelta) > 0.1)
+    storyParts.push(overallDelta > 0 ? `up ${overallDelta} kg overall` : `down ${Math.abs(overallDelta)} kg overall`);
+  storyParts.push(daysSinceLast === 0 ? 'weighed in today' : daysSinceLast === 1 ? 'last weighed yesterday' : `last weighed ${daysSinceLast} days ago`);
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext);margin-bottom:4px">To goal</div>
+        <div style="font-size:44px;font-weight:800;letter-spacing:-2px;line-height:1">${pace.kgToGo}<span style="font-size:18px;font-weight:500;color:var(--subtext);letter-spacing:0"> kg</span></div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext);margin-bottom:4px">On current conditions</div>
+        <div style="font-size:18px;font-weight:800;color:var(--primary);line-height:1.2">${pace.projDate || 'Log more weigh-ins'}</div>
+        <div style="font-size:12px;color:var(--subtext);margin-top:3px">${pace.rate.toFixed(2)} kg / week</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <div style="height:10px;background:var(--border);border-radius:5px;position:relative;margin-bottom:8px">
+        <div style="position:absolute;left:0;top:0;height:100%;width:${pct}%;background:linear-gradient(90deg,var(--primary),#7C3AED);border-radius:5px;transition:width 0.8s ease"></div>
+        <div style="position:absolute;left:${pct}%;top:50%;transform:translate(-50%,-50%);width:18px;height:18px;background:white;border:3px solid var(--primary);border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.18)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:600;color:var(--subtext)">
+        <span>${maxW.toFixed(1)} kg</span>
+        <span style="color:var(--primary)">${currentW.toFixed(1)} kg now</span>
+        <span style="color:var(--red)">Goal ${C.goal} kg</span>
+      </div>
+    </div>
+
+    <div style="margin-bottom:14px;line-height:1.8">${chips}</div>
+
+    <div style="font-size:12px;color:var(--subtext);padding-top:10px;border-top:1px solid var(--border);line-height:1.6">
+      ${storyParts.join(' · ')}
+    </div>
+  `;
+}
+
+// (old renderWeightChart — replaced by conditions-driven goal card above)
 function renderWeightChart() {
   if (typeof Chart === 'undefined') return;
   const canvas = document.getElementById('weight-chart');
@@ -1860,21 +1995,25 @@ function renderWeightChart() {
     }
   }
 
-  // Benchmark: −0.75 kg/week starting from the most recent actual reading
+  // Benchmark: −0.75 kg/week — only shown when a projection exists to compare against.
+  // Without projection it just extends the x-axis uselessly into the future.
   const benchData = [];
-  if (actualData.length) {
+  if (projData.length > 1 && actualData.length) {
     const startX = actualData[actualData.length - 1].x;
     const startY = actualData[actualData.length - 1].y;
-    const maxX   = projData.length ? projData[projData.length - 1].x : startX + 90;
+    const maxX   = projData[projData.length - 1].x;
     for (let dx = 0; dx <= maxX - startX; dx += 7) {
       benchData.push({ x: startX + dx, y: +(startY - 0.107 * dx).toFixed(2) });
     }
   }
 
-  const allX   = [...actualData, ...projData, ...benchData].map(p => p.x);
+  // x-axis: span from first reading to projection end (or today + 14d if no projection)
+  const lastActualX = actualData[actualData.length - 1].x;
+  const projEndX    = projData.length ? projData[projData.length - 1].x : null;
+  const xMax        = (projEndX != null ? projEndX : lastActualX + 14) + 2;
+
   const allY   = [...actualData, ...projData].map(p => p.y);
   const xMin   = 0;
-  const xMax   = Math.max(...allX) + 2;
   const yMin   = Math.floor(Math.min(...allY, C.goal) - 1);
   const yMax   = Math.ceil(Math.max(...allY) + 1);
 
@@ -1974,6 +2113,19 @@ function renderWeightChart() {
       }
     }
   });
+
+  // Update legend to reflect what's actually rendering
+  const legendEl = document.getElementById('weight-legend');
+  if (legendEl) {
+    const extras = [
+      projData.length > 1 ? `<span style="font-size:11px;color:var(--primary);opacity:0.5;font-weight:600">- - projected</span>` : '',
+      benchData.length > 1 ? `<span style="font-size:11px;color:var(--green);font-weight:600">- - 0.75 kg/wk</span>` : '',
+    ].filter(Boolean).join('');
+    legendEl.innerHTML = `
+      <span style="font-size:11px;color:var(--primary);font-weight:600">— actual</span>
+      ${extras}
+      <span style="font-size:11px;color:var(--red);font-weight:600">- - goal ${C.goal} kg</span>`;
+  }
 
   // Draw goal line manually
   const originalDraw = weightChart.draw.bind(weightChart);
@@ -2486,16 +2638,8 @@ function renderInsights() {
     ${startNowCard}
 
     <div class="insight-card">
-      <div class="insight-title">Weight trajectory</div>
-      <div id="weight-chart-label" style="font-size:12px;color:var(--subtext);margin:4px 0 4px"></div>
-      <div id="weight-proj-label" style="font-size:12px;margin:0 0 10px"></div>
-      <canvas id="weight-chart"></canvas>
-      <div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">
-        <span style="font-size:11px;color:var(--primary);font-weight:600">— actual</span>
-        <span style="font-size:11px;color:var(--primary);opacity:0.5;font-weight:600">- - projected</span>
-        <span style="font-size:11px;color:var(--green);font-weight:600">- - 0.75 kg/wk</span>
-        <span style="font-size:11px;color:var(--red);font-weight:600">- - goal ${C.goal} kg</span>
-      </div>
+      <div class="insight-title">Weight goal</div>
+      <div id="weight-goal-card"></div>
     </div>
 
     <div class="insight-card">
@@ -2547,7 +2691,7 @@ function renderInsights() {
 
   renderRHRChart();
   renderVO2Chart();
-  renderWeightChart();
+  renderWeightGoalCard();
   renderBodyCompChart();
 }
 
