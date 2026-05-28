@@ -758,10 +758,15 @@ async function getValidGHToken() {
 // ── API ───────────────────────────────────────────────────────────────────────
 let ghLastStatus = {};
 
-async function ghFetch(token, dataType, startISO, endISO) {
+// Convert civilTime.date {year,month,day} to ISO string YYYY-MM-DD
+function civilDateToISO(cd) {
+  if (!cd || !cd.year) return null;
+  return `${cd.year}-${String(cd.month).padStart(2,'0')}-${String(cd.day).padStart(2,'0')}`;
+}
+
+async function ghFetch(token, dataType) {
   try {
-    const url = `https://health.googleapis.com/v4/users/-/dataTypes/${dataType}/dataPoints:reconcile` +
-      `?startTime=${encodeURIComponent(startISO)}&endTime=${encodeURIComponent(endISO)}`;
+    const url = `https://health.googleapis.com/v4/users/me/dataTypes/${dataType}/dataPoints:reconcile`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) {
       const errBody = await r.text();
@@ -771,7 +776,8 @@ async function ghFetch(token, dataType, startISO, endISO) {
     }
     const d = await r.json();
     const pts = d.dataPoints || [];
-    ghLastStatus[dataType] = `OK — ${pts.length} point(s)`;
+    ghLastStatus[dataType] = `OK — ${pts.length} pt(s)`;
+    if (pts[0]) console.log(`[clarity] ${dataType} sample:`, JSON.stringify(pts[0]));
     return pts;
   } catch(e) {
     ghLastStatus[dataType] = `Error: ${e.message}`;
@@ -785,71 +791,62 @@ function showGHStatus() {
   alert(lines || 'No API calls made yet — is Google Health connected?');
 }
 
-function ptLocalDate(pt) {
-  // Use end time for sleep (morning attribution), start time for everything else
-  return new Date(pt.startTime).toLocaleDateString('en-CA');
-}
-
-function extractVal(pt, type) {
-  const v = pt?.value;
-  if (!v) return null;
-  if (type === 'weight')
-    return v.kilograms ?? v.fpVal ?? v.weight?.kilograms ?? null;
-  if (type === 'body-fat')
-    return v.percentage ?? v.bodyFat?.percentage ?? v.fpVal ?? null;
-  if (type === 'daily-heart-rate-variability')
-    return v.rmssd ?? v.dailyHeartRateVariability?.rmssd ?? v.fpVal ?? null;
-  if (type === 'sleep') {
-    const dur = (new Date(pt.endTime) - new Date(pt.startTime)) / 1000;
-    return dur > 3600 ? dur : null;
-  }
-  return v.fpVal ?? v.intVal ?? null;
-}
-
 async function fetchWellness() {
   const token = await getValidGHToken();
   if (!token) return [];
 
-  const startISO = daysAgo(28).toISOString();
-  const endISO   = new Date().toISOString();
+  const cutoff = toISO(daysAgo(90));
 
   const [weightPts, fatPts, hrvPts, sleepPts] = await Promise.all([
-    ghFetch(token, 'weight',                       startISO, endISO),
-    ghFetch(token, 'body-fat',                     startISO, endISO),
-    ghFetch(token, 'daily-heart-rate-variability', startISO, endISO),
-    ghFetch(token, 'sleep',                        startISO, endISO),
+    ghFetch(token, 'weight'),
+    ghFetch(token, 'body-fat'),
+    ghFetch(token, 'daily-heart-rate-variability'),
+    ghFetch(token, 'sleep'),
   ]);
-
-  // Log sample on first run to verify response format
-  if (weightPts[0]) console.log('[clarity] weight pt:', JSON.stringify(weightPts[0]));
-  if (hrvPts[0])    console.log('[clarity] hrv pt:',    JSON.stringify(hrvPts[0]));
-  if (sleepPts[0])  console.log('[clarity] sleep pt:',  JSON.stringify(sleepPts[0]));
 
   const byDate = {};
   const ensure = d => { if (!byDate[d]) byDate[d] = { id: d }; };
 
+  // Weight: pt.weight.weightGrams (grams → kg), date from civilTime
   for (const pt of weightPts) {
-    const d = ptLocalDate(pt); ensure(d);
-    const v = extractVal(pt, 'weight');
-    if (v) byDate[d].weight = v;
+    const d = civilDateToISO(pt.weight?.sampleTime?.civilTime?.date);
+    if (!d || d < cutoff) continue;
+    ensure(d);
+    const g = pt.weight?.weightGrams;
+    if (g != null) byDate[d].weight = g / 1000;
   }
+
+  // Body fat: camelCase field = bodyFat
   for (const pt of fatPts) {
-    const d = ptLocalDate(pt); ensure(d);
-    const v = extractVal(pt, 'body-fat');
-    if (v) byDate[d].bodyFat = v;
+    const data = pt.bodyFat;
+    const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
+    if (!d || d < cutoff) continue;
+    ensure(d);
+    const pct = data?.bodyFatPercentage ?? data?.percentage;
+    if (pct != null) byDate[d].bodyFat = pct;
   }
+
+  // HRV: camelCase field = dailyHeartRateVariability
   for (const pt of hrvPts) {
-    const d = ptLocalDate(pt); ensure(d);
-    const v = extractVal(pt, 'daily-heart-rate-variability');
-    if (v) byDate[d].hrv = v;
+    const data = pt.dailyHeartRateVariability;
+    const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
+    if (!d || d < cutoff) continue;
+    ensure(d);
+    const rmssd = data?.rmssd ?? data?.hrv ?? data?.milliseconds;
+    if (rmssd != null) byDate[d].hrv = rmssd;
   }
+
+  // Sleep: attributed to wake-up date, duration in seconds
   for (const pt of sleepPts) {
-    // Sleep attributed to end date (morning of wake-up)
-    const d = new Date(pt.endTime).toLocaleDateString('en-CA'); ensure(d);
-    const dur = extractVal(pt, 'sleep');
-    if (dur) byDate[d].sleepSecs = Math.max(byDate[d].sleepSecs || 0, dur);
-    const score = pt.value?.score ?? pt.value?.sleepScore ?? null;
-    if (score) byDate[d].sleepScore = score;
+    const data = pt.sleep;
+    if (!data) continue;
+    const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
+    if (!d || d < cutoff) continue;
+    ensure(d);
+    const dur = data?.durationSeconds ?? data?.duration;
+    if (dur != null && dur > 3600) byDate[d].sleepSecs = Math.max(byDate[d].sleepSecs || 0, dur);
+    const score = data?.score ?? data?.sleepScore;
+    if (score != null) byDate[d].sleepScore = score;
   }
 
   return Object.values(byDate).sort((a, b) => a.id.localeCompare(b.id));
@@ -1533,3 +1530,26 @@ async function boot() {
     if (ok) toast('Google Health connected ✓');
     else    toast('Connection failed — check client secret');
   }
+
+  drinks  = loadDrinks();
+  passes  = loadPasses();
+  renderHome(); renderLog();
+
+  wellness = await fetchWellness();
+  renderHome(); renderInsights();
+
+  if (!getOAIKey()) {
+    openSettings();
+  } else {
+    renderBrief(false);
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+
+boot();
+</script>
+</body>
+</html>
