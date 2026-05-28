@@ -1355,3 +1355,177 @@ function renderInsights() {
   const thisWeekHRV = withHRV.filter(w => w.id >= weekAgoStr);
   const lastWeekHRV = withHRV.filter(w => w.id >= twoWeeksStr && w.id < weekAgoStr);
   const drinkThisWeek = [...drinkNights].filter(d => d >= weekAgoStr).length;
+  const avgThis = avgFn(thisWeekHRV.map(w => w.hrv));
+  const avgLast = avgFn(lastWeekHRV.map(w => w.hrv));
+  let weekCompare = avgThis && avgLast
+    ? `<div class="insight-body" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        Last week avg: <strong>${avgLast.toFixed(1)} ms</strong> — HRV is <span class="${avgThis >= avgLast ? 'up' : 'down'}">${avgThis >= avgLast ? '↑' : '↓'} ${Math.abs(avgThis - avgLast).toFixed(1)} ms</span> this week.
+       </div>`
+    : '';
+
+  const wot = weeksOnTarget();
+  const annualSave = (C.baseline * 52).toLocaleString();
+
+  document.getElementById('insights-body').innerHTML = `
+    ${impactCard}
+    ${startNowCard}
+    ${patternCard}
+
+    <div class="insight-card">
+      <div class="insight-title">This week</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:14px">
+        <div>
+          <div class="insight-stat" style="font-size:28px">${drinkThisWeek}</div>
+          <div class="insight-body">session${drinkThisWeek !== 1 ? 's' : ''}</div>
+        </div>
+        <div>
+          <div class="insight-stat" style="font-size:28px;color:var(--green)">${passes.length}</div>
+          <div class="insight-body">passes</div>
+        </div>
+        <div>
+          <div class="insight-stat" style="font-size:28px;color:${avgThis ? 'var(--primary)' : 'var(--subtext)'}">${avgThis ? avgThis.toFixed(0) : '--'}</div>
+          <div class="insight-body">avg HRV</div>
+        </div>
+      </div>
+      <div class="insight-body" style="margin-top:10px">${wot.streak > 0 ? `🎯 ${wot.streak} consecutive week${wot.streak !== 1 ? 's' : ''} on target (≤2 sessions).` : 'A week on target means 2 or fewer sessions.'}</div>
+      ${weekCompare}
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Financial impact</div>
+      <div class="insight-stat">$${savings()}</div>
+      <div class="insight-body">At your old pace that's <strong>$${annualSave}/year</strong> — every alcohol-free day adds ~$${(C.baseline/7).toFixed(2)}.</div>
+    </div>
+  `;
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function openModal() {
+  document.getElementById('f-date').value  = toISO(new Date());
+  document.getElementById('f-cost').value  = '';
+  document.getElementById('f-notes').value = '';
+  stepN = 2;
+  document.getElementById('step-val').textContent = 2;
+  ctx = 'social';
+  document.querySelectorAll('.pill').forEach(p => p.classList.toggle('on', p.dataset.ctx === 'social'));
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal()    { document.getElementById('modal').classList.remove('open'); }
+function bgClose(e)      { if (e.target === document.getElementById('modal')) closeModal(); }
+function step(d)         { stepN = Math.max(1, Math.min(20, stepN+d)); document.getElementById('step-val').textContent = stepN; }
+function pickCtx(el)     { document.querySelectorAll('.pill').forEach(p => p.classList.remove('on')); el.classList.add('on'); ctx = el.dataset.ctx; }
+
+function saveDrink() {
+  const date = document.getElementById('f-date').value;
+  if (!date) { toast('Pick a date'); return; }
+  const entry = {
+    id:   uid(),
+    date,
+    n:    stepN,
+    ctx,
+    cost: parseFloat(document.getElementById('f-cost').value) || null,
+    note: document.getElementById('f-notes').value.trim(),
+    base: false
+  };
+  drinks.push(entry);
+  drinks.sort((a,b) => b.date.localeCompare(a.date));
+  persist(drinks);
+  closeModal();
+  toast('Session logged ✓');
+  renderHome(); renderLog(); renderInsights();
+}
+
+function del(id) {
+  drinks = drinks.filter(d => d.id !== id);
+  persist(drinks);
+  renderLog(); renderHome(); renderInsights();
+  toast('Removed');
+}
+
+// ── Coaching prompt ───────────────────────────────────────────────────────────
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function openSettings() {
+  const ghEl = document.getElementById('f-gh-secret');
+  ghEl.value = getGHSecret() ? '••••••••••••••••' : '';
+  ghEl.placeholder = getGHSecret() ? 'Secret saved — paste to replace' : 'GOCSPX-...';
+  document.getElementById('btn-gh-connect').textContent =
+    ghConnected() ? '✓ Connected — Reconnect' : 'Connect Google Health';
+
+  const oaiEl = document.getElementById('f-oai-key');
+  oaiEl.value = getOAIKey() ? '••••••••••••••••' : '';
+  oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
+
+  document.getElementById('settings-modal').classList.add('open');
+}
+function closeSettings()    { document.getElementById('settings-modal').classList.remove('open'); }
+function bgCloseSettings(e) { if (e.target === document.getElementById('settings-modal')) closeSettings(); }
+
+function saveSettings() {
+  const ghVal = document.getElementById('f-gh-secret').value.trim();
+  if (ghVal && !ghVal.startsWith('••')) {
+    setGHSecret(ghVal);
+    toast('Client secret saved ✓');
+  }
+
+  const oaiVal = document.getElementById('f-oai-key').value.trim();
+  if (oaiVal && !oaiVal.startsWith('••')) {
+    if (!oaiVal.startsWith('sk-')) { toast('That doesn\'t look like a valid OpenAI key'); return; }
+    setOAIKey(oaiVal);
+    localStorage.removeItem('clarity_brief_' + toISO(new Date()));
+  }
+
+  closeSettings();
+  if (getOAIKey()) renderBrief(true);
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function goTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('nb-'  + name).classList.add('active');
+  if (name === 'log')      renderLog();
+  if (name === 'insights') renderInsights();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+async function boot() {
+  // Handle Google OAuth callback
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('code') && urlParams.get('state') === 'clarity_gh') {
+    history.replaceState({}, '', window.location.pathname);
+    const ok = await exchangeGHCode(urlParams.get('code'));
+    if (ok) toast('Google Health connected ✓');
+    else    toast('Connection failed — check client secret');
+  }
+
+  drinks  = loadDrinks();
+  passes  = loadPasses();
+  renderHome(); renderLog();
+
+  wellness = await fetchWellness();
+  renderHome(); renderInsights();
+
+  if (!getOAIKey()) {
+    openSettings();
+  } else {
+    renderBrief(false);
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+
+boot();
+</script>
+</body>
+</html>
