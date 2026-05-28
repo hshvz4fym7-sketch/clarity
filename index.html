@@ -1807,12 +1807,12 @@ function renderWeightChart() {
   const canvas = document.getElementById('weight-chart');
   if (!canvas) return;
 
-  const trend = weightTrend(30);
-  const labelEl  = document.getElementById('weight-chart-label');
-  const projEl   = document.getElementById('weight-proj-label');
+  const trend   = weightTrend(30);
+  const labelEl = document.getElementById('weight-chart-label');
+  const projEl  = document.getElementById('weight-proj-label');
 
   const allWeight = wellness.filter(w => w.weight != null).sort((a,b) => a.id.localeCompare(b.id));
-  if (allWeight.length < 3) {
+  if (allWeight.length < 2) {
     if (labelEl) labelEl.textContent = 'Not enough weight data yet.';
     return;
   }
@@ -1820,96 +1820,115 @@ function renderWeightChart() {
   if (trend && labelEl) {
     const kgPerWeek = (trend.slope * 7).toFixed(2);
     const dir = trend.slope < 0 ? 'losing' : 'gaining';
-    labelEl.innerHTML = `<span style="font-weight:700">${dir} ${Math.abs(kgPerWeek)} kg/week</span> avg over 30 days`;
+    labelEl.innerHTML = `<span style="font-weight:700">${dir} ${Math.abs(kgPerWeek)} kg/week</span> over last 30 days`;
+  } else if (labelEl) {
+    labelEl.textContent = 'Tracking weight trend — more readings needed for projection.';
   }
   if (trend?.projDate && projEl) {
     const kgLeft = Math.abs(trend.currentW - C.goal).toFixed(1);
     projEl.innerHTML = `Goal <strong>${C.goal} kg</strong> · ${kgLeft} kg to go · on current trend: <strong>${trend.projDate}</strong>`;
     projEl.style.color = 'var(--primary)';
   } else if (projEl) {
-    projEl.innerHTML = `Goal: <strong>${C.goal} kg</strong> · ${trend ? 'Trend moving away from goal' : 'Insufficient data'}`;
+    const kgLeft = trend?.currentW ? Math.abs(trend.currentW - C.goal).toFixed(1) : '?';
+    projEl.innerHTML = `Goal: <strong>${C.goal} kg</strong> · ${kgLeft} kg to go`;
     projEl.style.color = 'var(--subtext)';
   }
 
-  // Build labels: actual data + up to 90-day projection
-  const labels = allWeight.map(w =>
-    new Date(w.id + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
-  );
-  const actuals = allWeight.map(w => +w.weight.toFixed(2));
+  // Use day-offset numeric x-axis so dates are spaced by actual elapsed time.
+  // This ensures a March-to-May gap is visually honest and today's reading
+  // always renders at the correct right-edge position regardless of label count.
+  const epoch = new Date(allWeight[0].id + 'T00:00:00').getTime();
+  const dayOffset = iso => (new Date(iso + 'T00:00:00').getTime() - epoch) / 86400000;
+  const fmtLabel  = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
 
-  // Projection: from last data point forward to goal (or 90 days)
-  let projLabels = [], projValues = [];
-  if (trend && trend.slope < 0) {
-    const lastDate    = new Date(allWeight[allWeight.length - 1].id + 'T00:00:00');
-    const daysProject = Math.min(Math.ceil(trend.daysToGoal || 180), 120);
-    for (let i = 1; i <= daysProject; i += 7) {
-      const d = new Date(lastDate); d.setDate(d.getDate() + i);
-      const daysSinceRef = (d.getTime() - trend.refTime) / 86400000;
+  const actualData = allWeight.map(w => ({ x: dayOffset(w.id), y: +w.weight.toFixed(2) }));
+
+  // Projection: weekly steps from last data point toward goal
+  const projData = [];
+  if (trend && trend.slope < 0 && trend.daysToGoal > 0) {
+    const lastOffset = actualData[actualData.length - 1].x;
+    const daysProject = Math.min(Math.ceil(trend.daysToGoal), 365);
+    // connect from last actual to start of projection
+    projData.push(actualData[actualData.length - 1]);
+    for (let i = 7; i <= daysProject; i += 7) {
+      const absDay    = dayOffset(allWeight[allWeight.length - 1].id) + i;
+      const isoForCalc = allWeight[allWeight.length - 1].id; // relative to refTime
+      const daysSinceRef = (new Date(isoForCalc + 'T00:00:00').getTime() - trend.refTime) / 86400000 + i;
       const proj = trend.intercept + trend.slope * daysSinceRef;
-      if (proj < C.goal - 0.5) break;
-      projLabels.push(d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }));
-      projValues.push(+proj.toFixed(2));
+      if (proj < C.goal - 0.5) { projData.push({ x: absDay, y: +C.goal.toFixed(2) }); break; }
+      projData.push({ x: absDay, y: +proj.toFixed(2) });
     }
-    // Add goal endpoint
-    projLabels.push('Goal');
-    projValues.push(C.goal);
   }
 
-  const allLabels = [...labels, ...projLabels];
-  const actualFull = [...actuals, ...new Array(projLabels.length).fill(null)];
-  const projFull   = [...new Array(actuals.length - 1).fill(null), actuals[actuals.length - 1], ...projValues];
+  // Benchmark: −0.75 kg/week starting from the most recent actual reading
+  const benchData = [];
+  if (actualData.length) {
+    const startX = actualData[actualData.length - 1].x;
+    const startY = actualData[actualData.length - 1].y;
+    const maxX   = projData.length ? projData[projData.length - 1].x : startX + 90;
+    for (let dx = 0; dx <= maxX - startX; dx += 7) {
+      benchData.push({ x: startX + dx, y: +(startY - 0.107 * dx).toFixed(2) });
+    }
+  }
 
-  // Benchmark: -0.75kg/week line from current weight
-  const benchmarkFull = allLabels.map((_, i) => {
-    const w = allWeight[allWeight.length - 1]?.weight;
-    if (!w) return null;
-    return +(w - (0.107 * i)).toFixed(2); // 0.75/7 per day slot
-  });
+  const allX   = [...actualData, ...projData, ...benchData].map(p => p.x);
+  const allY   = [...actualData, ...projData].map(p => p.y);
+  const xMin   = 0;
+  const xMax   = Math.max(...allX) + 2;
+  const yMin   = Math.floor(Math.min(...allY, C.goal) - 1);
+  const yMax   = Math.ceil(Math.max(...allY) + 1);
 
-  const yMin = Math.floor(Math.min(...actuals, C.goal) - 1);
-  const yMax = Math.ceil(Math.max(...actuals) + 1);
+  // Build visible tick positions roughly every 2 weeks across the x range
+  const tickStep  = Math.ceil(xMax / 6 / 7) * 7; // round up to nearest week
+  const tickVals  = [];
+  for (let t = 0; t <= xMax; t += tickStep) tickVals.push(t);
+  // Always include the rightmost actual data point
+  const lastX = actualData[actualData.length - 1].x;
+  if (!tickVals.includes(lastX)) tickVals.push(lastX);
+  tickVals.sort((a,b) => a - b);
 
   if (weightChart) weightChart.destroy();
   weightChart = new Chart(canvas.getContext('2d'), {
-    type: 'line',
+    type: 'scatter',
     data: {
-      labels: allLabels,
       datasets: [
         {
           label: 'Weight',
-          data: actualFull,
+          data: actualData,
           borderColor: '#4F46E5',
+          backgroundColor: '#4F46E5',
           borderWidth: 2.5,
-          pointBackgroundColor: '#4F46E5',
-          pointRadius: 3,
+          pointRadius: 4,
           pointHoverRadius: 7,
+          showLine: true,
           tension: 0.3,
-          fill: false,
           order: 1
         },
-        {
+        ...(projData.length > 1 ? [{
           label: 'Projection',
-          data: projFull,
+          data: projData,
           borderColor: '#4F46E5',
+          backgroundColor: 'transparent',
           borderWidth: 1.5,
           borderDash: [5, 4],
           pointRadius: 0,
           pointHoverRadius: 5,
+          showLine: true,
           tension: 0.3,
-          fill: false,
           order: 2
-        },
-        {
-          label: '0.75 kg/wk pace',
-          data: benchmarkFull,
+        }] : []),
+        ...(benchData.length > 1 ? [{
+          label: '0.75 kg/wk',
+          data: benchData,
           borderColor: '#10B981',
+          backgroundColor: 'transparent',
           borderWidth: 1,
           borderDash: [3, 5],
           pointRadius: 0,
+          showLine: true,
           tension: 0,
-          fill: false,
           order: 3
-        }
+        }] : [])
       ]
     },
     options: {
@@ -1921,16 +1940,32 @@ function renderWeightChart() {
         tooltip: {
           callbacks: {
             label: c => {
-              if (c.datasetIndex === 0) return `${c.raw} kg`;
-              if (c.datasetIndex === 1) return `Projected: ${c.raw} kg`;
-              if (c.datasetIndex === 2) return `0.75/wk pace: ${c.raw} kg`;
+              const d = new Date(epoch + c.parsed.x * 86400000);
+              const dateStr = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+              if (c.datasetIndex === 0) return `${dateStr}: ${c.parsed.y} kg`;
+              if (c.datasetIndex === 1) return `Projected: ${c.parsed.y} kg`;
+              if (c.datasetIndex === 2) return `0.75/wk pace: ${c.parsed.y} kg`;
               return '';
             }
           }
         }
       },
       scales: {
-        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, maxTicksLimit: 7 } },
+        x: {
+          type: 'linear',
+          min: xMin,
+          max: xMax,
+          grid: { display: false },
+          ticks: {
+            font: { size: 10 },
+            maxRotation: 0,
+            values: tickVals,
+            callback: v => {
+              const d = new Date(epoch + v * 86400000);
+              return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+            }
+          }
+        },
         y: {
           grid: { color: 'rgba(0,0,0,0.05)' },
           ticks: { font: { size: 11 }, callback: v => v + ' kg' },
@@ -1977,24 +2012,23 @@ function renderBodyCompChart() {
     .filter(w => fatMassKg(w) != null)
     .sort((a,b) => a.id.localeCompare(b.id));
 
-  if (pts.length < 3) {
+  if (pts.length < 2) {
     const sub = document.getElementById('body-comp-sub');
     if (sub) sub.textContent = 'Not enough data yet — syncing body composition readings.';
     return;
   }
 
-  const labels  = pts.map(w =>
-    new Date(w.id + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
-  );
-  const fatVals  = pts.map(w => +fatMassKg(w).toFixed(2));
-  const leanVals = pts.map(w => +leanMassKg(w).toFixed(2));
+  // Day-offset x-axis so data is positioned by actual elapsed time
+  const bcEpoch  = new Date(pts[0].id + 'T00:00:00').getTime();
+  const bcOffset = iso => (new Date(iso + 'T00:00:00').getTime() - bcEpoch) / 86400000;
 
-  const latestFat  = fatVals[fatVals.length - 1];
-  const latestLean = leanVals[leanVals.length - 1];
-  const firstFat   = fatVals[0];
-  const firstLean  = leanVals[0];
-  const fatDelta   = latestFat - firstFat;
-  const leanDelta  = latestLean - firstLean;
+  const fatData  = pts.map(w => ({ x: bcOffset(w.id), y: +fatMassKg(w).toFixed(2) }));
+  const leanData = pts.map(w => ({ x: bcOffset(w.id), y: +leanMassKg(w).toFixed(2) }));
+
+  const latestFat  = fatData[fatData.length - 1].y;
+  const latestLean = leanData[leanData.length - 1].y;
+  const fatDelta   = latestFat  - fatData[0].y;
+  const leanDelta  = latestLean - leanData[0].y;
 
   const subEl = document.getElementById('body-comp-sub');
   if (subEl) {
@@ -2003,34 +2037,44 @@ function renderBodyCompChart() {
     subEl.innerHTML = `${fatStr} · ${leanStr} since tracking started`;
   }
 
-  const yMin = Math.floor(Math.min(...fatVals, ...leanVals) - 1);
-  const yMax = Math.ceil(Math.max(...fatVals, ...leanVals) + 1);
+  const allY  = [...fatData, ...leanData].map(p => p.y);
+  const xMax  = Math.max(...fatData.map(p => p.x)) + 2;
+  const yMin  = Math.floor(Math.min(...allY) - 1);
+  const yMax  = Math.ceil(Math.max(...allY) + 1);
+
+  const tickStep = Math.ceil(xMax / 6 / 7) * 7;
+  const bcTicks  = [];
+  for (let t = 0; t <= xMax; t += tickStep) bcTicks.push(t);
+  const lastBCX = fatData[fatData.length - 1].x;
+  if (!bcTicks.includes(lastBCX)) bcTicks.push(lastBCX);
+  bcTicks.sort((a,b) => a - b);
 
   if (bodyCompChart) bodyCompChart.destroy();
   bodyCompChart = new Chart(canvas.getContext('2d'), {
-    type: 'line',
+    type: 'scatter',
     data: {
-      labels,
       datasets: [
         {
           label: 'Fat mass',
-          data: fatVals,
+          data: fatData,
           borderColor: '#F59E0B',
           backgroundColor: 'rgba(245,158,11,0.08)',
           borderWidth: 2.5,
           pointRadius: 3,
           pointBackgroundColor: '#F59E0B',
+          showLine: true,
           tension: 0.3,
           fill: true
         },
         {
           label: 'Lean mass',
-          data: leanVals,
+          data: leanData,
           borderColor: '#10B981',
           backgroundColor: 'rgba(16,185,129,0.06)',
           borderWidth: 2.5,
           pointRadius: 3,
           pointBackgroundColor: '#10B981',
+          showLine: true,
           tension: 0.3,
           fill: true
         }
@@ -2047,11 +2091,31 @@ function renderBodyCompChart() {
           labels: { font: { size: 11 }, boxWidth: 12, padding: 12, usePointStyle: true }
         },
         tooltip: {
-          callbacks: { label: c => `${c.dataset.label}: ${c.raw} kg` }
+          callbacks: {
+            label: c => {
+              const d = new Date(bcEpoch + c.parsed.x * 86400000);
+              const dateStr = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+              return `${c.dataset.label} (${dateStr}): ${c.parsed.y} kg`;
+            }
+          }
         }
       },
       scales: {
-        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, maxTicksLimit: 7 } },
+        x: {
+          type: 'linear',
+          min: 0,
+          max: xMax,
+          grid: { display: false },
+          ticks: {
+            font: { size: 10 },
+            maxRotation: 0,
+            values: bcTicks,
+            callback: v => {
+              const d = new Date(bcEpoch + v * 86400000);
+              return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+            }
+          }
+        },
         y: {
           grid: { color: 'rgba(0,0,0,0.05)' },
           ticks: { font: { size: 11 }, callback: v => v + ' kg' },
