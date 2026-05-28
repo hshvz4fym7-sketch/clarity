@@ -588,7 +588,9 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 const C = {
   start:    '2026-05-27',
-  baseline: 75   // $ per week before change
+  baseline: 75,   // $ per week before change
+  goal:     89,   // target weight kg
+  sleepTarget: 7.5  // hours per night
 };
 
 // Google Health OAuth — client ID is public, secret lives on-device only
@@ -977,6 +979,89 @@ function fatMassKg(w) {
   return (w.weight != null && w.bodyFat != null) ? w.weight * w.bodyFat / 100 : null;
 }
 
+// Lean mass in kg
+function leanMassKg(w) {
+  const fm = fatMassKg(w);
+  return (fm != null) ? w.weight - fm : null;
+}
+
+// Ordinary least-squares linear regression on [{x, y}] pairs
+// Returns { slope, intercept, r2 } or null if insufficient data
+function linearRegression(pts) {
+  if (pts.length < 3) return null;
+  const n = pts.length;
+  const sumX  = pts.reduce((s,p) => s + p.x, 0);
+  const sumY  = pts.reduce((s,p) => s + p.y, 0);
+  const sumXY = pts.reduce((s,p) => s + p.x * p.y, 0);
+  const sumX2 = pts.reduce((s,p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+  const slope     = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  const meanY     = sumY / n;
+  const ssTot = pts.reduce((s,p) => s + Math.pow(p.y - meanY, 2), 0);
+  const ssRes = pts.reduce((s,p) => s + Math.pow(p.y - (slope * p.x + intercept), 2), 0);
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+  return { slope, intercept, r2 };
+}
+
+// 14-day sleep debt (hours) against C.sleepTarget, weighted toward recent nights
+// Weight = 1.0 for yesterday, decaying by 0.85 each night back
+function sleepDebt() {
+  const nights = 14;
+  let totalDebt = 0, totalWeight = 0;
+  for (let i = 1; i <= nights; i++) {
+    const d     = toISO(daysAgo(i));
+    const entry = wellness.find(w => w.id === d);
+    const slept = entry?.sleepSecs ? entry.sleepSecs / 3600 : 0;
+    const w     = Math.pow(0.85, i - 1);
+    totalDebt   += w * Math.max(0, C.sleepTarget - slept);
+    totalWeight += w;
+  }
+  return totalWeight > 0 ? totalDebt / totalWeight * nights : 0;
+}
+
+// Weight regression on last N days — returns { slope (kg/day), daysToGoal, r2, projDate }
+function weightTrend(days) {
+  const cutoff = toISO(daysAgo(days));
+  const ref    = new Date(cutoff + 'T00:00:00').getTime();
+  const pts    = wellness
+    .filter(w => w.weight != null && w.id >= cutoff)
+    .map(w => ({ x: (new Date(w.id + 'T00:00:00').getTime() - ref) / 86400000, y: w.weight }));
+  const reg = linearRegression(pts);
+  if (!reg) return null;
+  const currentW = wellness.filter(w => w.weight != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.weight;
+  if (!currentW) return null;
+  const daysToGoal = reg.slope < 0 ? (C.goal - currentW) / reg.slope : null;
+  let projDate = null;
+  if (daysToGoal != null && daysToGoal > 0 && daysToGoal < 1000) {
+    const d = new Date(); d.setDate(d.getDate() + Math.round(daysToGoal));
+    projDate = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  return { slope: reg.slope, intercept: reg.intercept, r2: reg.r2, daysToGoal, projDate, currentW, refTime: ref };
+}
+
+// Training-recovery correlation: HRV threshold above which fat burn performance is best
+function trainingRecoveryInsight() {
+  const withBoth = wellness.filter(w => w.hrv != null && (w.totalAZM || 0) > 0);
+  if (withBoth.length < 4) return null;
+  const sorted = [...withBoth].sort((a,b) => a.hrv - b.hrv);
+  const med    = sorted[Math.floor(sorted.length / 2)].hrv;
+  const hi     = withBoth.filter(w => w.hrv >= med);
+  const lo     = withBoth.filter(w => w.hrv <  med);
+  const avgAZM = arr => arr.length ? arr.reduce((s,w) => s + (w.totalAZM || 0), 0) / arr.length : 0;
+  const avgFB  = arr => arr.length ? arr.reduce((s,w) => s + (w.fatBurnMins || 0), 0) / arr.length : 0;
+  return {
+    threshold:    Math.round(med),
+    hiAZM:        avgAZM(hi).toFixed(0),
+    loAZM:        avgAZM(lo).toFixed(0),
+    hiFatBurn:    avgFB(hi).toFixed(0),
+    loFatBurn:    avgFB(lo).toFixed(0),
+    hiCount:      hi.length,
+    loCount:      lo.length,
+  };
+}
+
 function fmtDate(iso) {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
 }
@@ -1145,20 +1230,55 @@ async function fetchAIInsight(force) {
   const recentBfEntry = [...wellness].filter(w => fatMassKg(w) != null).sort((a,b) => b.id.localeCompare(a.id))[0];
   const fatMassContext = recentBfEntry ? `Current fat mass: ${fatMassKg(recentBfEntry).toFixed(1)}kg (${recentBfEntry.bodyFat.toFixed(1)}% of ${recentBfEntry.weight.toFixed(1)}kg)` : 'Fat mass: no data';
 
-  const prompt = `You are a direct, encouraging health coach. I am reducing alcohol to social-only drinking, tracking via Pixel Watch 3. Give me exactly 2-3 sentences. Be specific — use my actual numbers. One observation from the data, one thing to focus on today. No generic advice, no preamble.
+  // Sleep debt context
+  const debt = sleepDebt();
+  const sleepDebtContext = `14-night weighted sleep debt: ${debt.toFixed(1)}h vs ${C.sleepTarget}h/night target`;
 
+  // Weight trajectory context
+  const trend = weightTrend(30);
+  const weightTrendContext = trend
+    ? `Weight trend: ${(trend.slope * 7).toFixed(2)} kg/week over 30 days${trend.projDate ? ` — at this pace hit ${C.goal}kg on ${trend.projDate}` : ' — not on track for goal yet'}`
+    : 'Weight trend: insufficient data';
+
+  // Body composition context
+  const recentCompEntry = [...wellness].filter(w => fatMassKg(w) != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+  const oldCompEntry    = [...wellness].filter(w => fatMassKg(w) != null && w.id <= toISO(daysAgo(30))).sort((a,b) => b.id.localeCompare(a.id))[0];
+  let bodyCompContext = 'Body composition: no data yet';
+  if (recentCompEntry) {
+    const fm   = fatMassKg(recentCompEntry);
+    const lean = leanMassKg(recentCompEntry);
+    let compDelta = '';
+    if (oldCompEntry) {
+      const fmDelta   = fm - fatMassKg(oldCompEntry);
+      const leanDelta = lean - leanMassKg(oldCompEntry);
+      compDelta = ` (${fmDelta < 0 ? '' : '+'}${fmDelta.toFixed(1)}kg fat, ${leanDelta >= 0 ? '+' : ''}${leanDelta.toFixed(1)}kg lean vs 30d ago)`;
+    }
+    bodyCompContext = `Body composition: ${fm.toFixed(1)}kg fat / ${lean.toFixed(1)}kg lean${compDelta}`;
+  }
+
+  // Training-recovery context
+  const trCorr = trainingRecoveryInsight();
+  const trainingContext = trCorr
+    ? `Training-recovery: on high-HRV days (≥${trCorr.threshold}ms) avg ${trCorr.hiAZM} AZM and ${trCorr.hiFatBurn}m fat burn vs ${trCorr.loAZM} AZM and ${trCorr.loFatBurn}m fat burn on low-HRV days`
+    : '';
+
+  const prompt = `You are a direct, encouraging health coach. I am reducing alcohol to social-only drinking to lose 15+ kg, tracking via Pixel Watch 3. Give me exactly 2-3 sentences. Be specific — use my actual numbers. One observation from the data, one actionable thing to focus on today. No generic advice, no preamble.
+
+Goal: reach ${C.goal} kg (currently ${trend?.currentW?.toFixed(1) || '?'} kg)
 Days since last drink: ${ago === null ? 'unknown' : ago}
 Approach start: ${C.start}
-Weekly baseline spend before change: $${C.baseline}
 
 Last 7 days wellness:
 ${recentW || 'No data yet'}
 
 ${rhrContext}
 ${fatMassContext}
+${bodyCompContext}
+${weightTrendContext}
+${sleepDebtContext}
 Weekly active zone minutes: ${weeklyAZM().total} / 150${weeklyAZM().fatBurn ? ` (${weeklyAZM().fatBurn}m in fat burn zone)` : ''}
 VO2 max: ${latestVO2() ? latestVO2().toFixed(1) + ' ml/kg/min' : 'no data yet'}
-
+${trainingContext ? trainingContext + '\n' : ''}
 Recent drink log:
 ${recentD || 'None logged'}`;
 
@@ -1680,6 +1800,268 @@ function renderVO2Chart() {
   vo2Chart.draw();
 }
 
+// ── Render: Weight Trajectory Chart ──────────────────────────────────────────
+let weightChart = null;
+function renderWeightChart() {
+  if (typeof Chart === 'undefined') return;
+  const canvas = document.getElementById('weight-chart');
+  if (!canvas) return;
+
+  const trend = weightTrend(30);
+  const labelEl  = document.getElementById('weight-chart-label');
+  const projEl   = document.getElementById('weight-proj-label');
+
+  const allWeight = wellness.filter(w => w.weight != null).sort((a,b) => a.id.localeCompare(b.id));
+  if (allWeight.length < 3) {
+    if (labelEl) labelEl.textContent = 'Not enough weight data yet.';
+    return;
+  }
+
+  if (trend && labelEl) {
+    const kgPerWeek = (trend.slope * 7).toFixed(2);
+    const dir = trend.slope < 0 ? 'losing' : 'gaining';
+    labelEl.innerHTML = `<span style="font-weight:700">${dir} ${Math.abs(kgPerWeek)} kg/week</span> avg over 30 days`;
+  }
+  if (trend?.projDate && projEl) {
+    const kgLeft = Math.abs(trend.currentW - C.goal).toFixed(1);
+    projEl.innerHTML = `Goal <strong>${C.goal} kg</strong> · ${kgLeft} kg to go · on current trend: <strong>${trend.projDate}</strong>`;
+    projEl.style.color = 'var(--primary)';
+  } else if (projEl) {
+    projEl.innerHTML = `Goal: <strong>${C.goal} kg</strong> · ${trend ? 'Trend moving away from goal' : 'Insufficient data'}`;
+    projEl.style.color = 'var(--subtext)';
+  }
+
+  // Build labels: actual data + up to 90-day projection
+  const labels = allWeight.map(w =>
+    new Date(w.id + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
+  );
+  const actuals = allWeight.map(w => +w.weight.toFixed(2));
+
+  // Projection: from last data point forward to goal (or 90 days)
+  let projLabels = [], projValues = [];
+  if (trend && trend.slope < 0) {
+    const lastDate    = new Date(allWeight[allWeight.length - 1].id + 'T00:00:00');
+    const daysProject = Math.min(Math.ceil(trend.daysToGoal || 180), 120);
+    for (let i = 1; i <= daysProject; i += 7) {
+      const d = new Date(lastDate); d.setDate(d.getDate() + i);
+      const daysSinceRef = (d.getTime() - trend.refTime) / 86400000;
+      const proj = trend.intercept + trend.slope * daysSinceRef;
+      if (proj < C.goal - 0.5) break;
+      projLabels.push(d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }));
+      projValues.push(+proj.toFixed(2));
+    }
+    // Add goal endpoint
+    projLabels.push('Goal');
+    projValues.push(C.goal);
+  }
+
+  const allLabels = [...labels, ...projLabels];
+  const actualFull = [...actuals, ...new Array(projLabels.length).fill(null)];
+  const projFull   = [...new Array(actuals.length - 1).fill(null), actuals[actuals.length - 1], ...projValues];
+
+  // Benchmark: -0.75kg/week line from current weight
+  const benchmarkFull = allLabels.map((_, i) => {
+    const w = allWeight[allWeight.length - 1]?.weight;
+    if (!w) return null;
+    return +(w - (0.107 * i)).toFixed(2); // 0.75/7 per day slot
+  });
+
+  const yMin = Math.floor(Math.min(...actuals, C.goal) - 1);
+  const yMax = Math.ceil(Math.max(...actuals) + 1);
+
+  if (weightChart) weightChart.destroy();
+  weightChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: allLabels,
+      datasets: [
+        {
+          label: 'Weight',
+          data: actualFull,
+          borderColor: '#4F46E5',
+          borderWidth: 2.5,
+          pointBackgroundColor: '#4F46E5',
+          pointRadius: 3,
+          pointHoverRadius: 7,
+          tension: 0.3,
+          fill: false,
+          order: 1
+        },
+        {
+          label: 'Projection',
+          data: projFull,
+          borderColor: '#4F46E5',
+          borderWidth: 1.5,
+          borderDash: [5, 4],
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          tension: 0.3,
+          fill: false,
+          order: 2
+        },
+        {
+          label: '0.75 kg/wk pace',
+          data: benchmarkFull,
+          borderColor: '#10B981',
+          borderWidth: 1,
+          borderDash: [3, 5],
+          pointRadius: 0,
+          tension: 0,
+          fill: false,
+          order: 3
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      aspectRatio: 2.2,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              if (c.datasetIndex === 0) return `${c.raw} kg`;
+              if (c.datasetIndex === 1) return `Projected: ${c.raw} kg`;
+              if (c.datasetIndex === 2) return `0.75/wk pace: ${c.raw} kg`;
+              return '';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, maxTicksLimit: 7 } },
+        y: {
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { font: { size: 11 }, callback: v => v + ' kg' },
+          min: yMin, max: yMax
+        }
+      }
+    }
+  });
+
+  // Draw goal line manually
+  const originalDraw = weightChart.draw.bind(weightChart);
+  weightChart.draw = function() {
+    originalDraw();
+    const ctx2 = canvas.getContext('2d');
+    const yScale = weightChart.scales.y;
+    if (C.goal < yMin || C.goal > yMax) return;
+    const y = yScale.getPixelForValue(C.goal);
+    const xStart = weightChart.chartArea.left;
+    const xEnd   = weightChart.chartArea.right;
+    ctx2.save();
+    ctx2.strokeStyle = '#EF4444';
+    ctx2.lineWidth = 1.5;
+    ctx2.setLineDash([6, 4]);
+    ctx2.globalAlpha = 0.6;
+    ctx2.beginPath(); ctx2.moveTo(xStart, y); ctx2.lineTo(xEnd, y); ctx2.stroke();
+    ctx2.globalAlpha = 0.9;
+    ctx2.fillStyle = '#EF4444';
+    ctx2.font = 'bold 10px -apple-system, sans-serif';
+    ctx2.textAlign = 'right';
+    ctx2.fillText(`Goal ${C.goal} kg`, xEnd - 4, y - 3);
+    ctx2.restore();
+  };
+  weightChart.draw();
+}
+
+// ── Render: Body Composition Chart ────────────────────────────────────────────
+let bodyCompChart = null;
+function renderBodyCompChart() {
+  if (typeof Chart === 'undefined') return;
+  const canvas = document.getElementById('body-comp-chart');
+  if (!canvas) return;
+
+  const pts = wellness
+    .filter(w => fatMassKg(w) != null)
+    .sort((a,b) => a.id.localeCompare(b.id));
+
+  if (pts.length < 3) {
+    const sub = document.getElementById('body-comp-sub');
+    if (sub) sub.textContent = 'Not enough data yet — syncing body composition readings.';
+    return;
+  }
+
+  const labels  = pts.map(w =>
+    new Date(w.id + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
+  );
+  const fatVals  = pts.map(w => +fatMassKg(w).toFixed(2));
+  const leanVals = pts.map(w => +leanMassKg(w).toFixed(2));
+
+  const latestFat  = fatVals[fatVals.length - 1];
+  const latestLean = leanVals[leanVals.length - 1];
+  const firstFat   = fatVals[0];
+  const firstLean  = leanVals[0];
+  const fatDelta   = latestFat - firstFat;
+  const leanDelta  = latestLean - firstLean;
+
+  const subEl = document.getElementById('body-comp-sub');
+  if (subEl) {
+    const fatStr  = fatDelta < 0 ? `<span style="color:var(--green)">-${Math.abs(fatDelta).toFixed(1)} kg fat</span>` : `<span style="color:var(--amber)">+${fatDelta.toFixed(1)} kg fat</span>`;
+    const leanStr = leanDelta >= 0 ? `<span style="color:var(--green)">+${leanDelta.toFixed(1)} kg lean</span>` : `<span style="color:var(--subtext)">${leanDelta.toFixed(1)} kg lean</span>`;
+    subEl.innerHTML = `${fatStr} · ${leanStr} since tracking started`;
+  }
+
+  const yMin = Math.floor(Math.min(...fatVals, ...leanVals) - 1);
+  const yMax = Math.ceil(Math.max(...fatVals, ...leanVals) + 1);
+
+  if (bodyCompChart) bodyCompChart.destroy();
+  bodyCompChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Fat mass',
+          data: fatVals,
+          borderColor: '#F59E0B',
+          backgroundColor: 'rgba(245,158,11,0.08)',
+          borderWidth: 2.5,
+          pointRadius: 3,
+          pointBackgroundColor: '#F59E0B',
+          tension: 0.3,
+          fill: true
+        },
+        {
+          label: 'Lean mass',
+          data: leanVals,
+          borderColor: '#10B981',
+          backgroundColor: 'rgba(16,185,129,0.06)',
+          borderWidth: 2.5,
+          pointRadius: 3,
+          pointBackgroundColor: '#10B981',
+          tension: 0.3,
+          fill: true
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      aspectRatio: 2.2,
+      plugins: {
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: { font: { size: 11 }, boxWidth: 12, padding: 12, usePointStyle: true }
+        },
+        tooltip: {
+          callbacks: { label: c => `${c.dataset.label}: ${c.raw} kg` }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, maxTicksLimit: 7 } },
+        y: {
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { font: { size: 11 }, callback: v => v + ' kg' },
+          min: yMin, max: yMax
+        }
+      }
+    }
+  });
+}
+
 // ── Render: Log ───────────────────────────────────────────────────────────────
 function renderLog() {
   const el = document.getElementById('drink-list');
@@ -1900,10 +2282,164 @@ function renderInsights() {
   const wot = weeksOnTarget();
   const annualSave = (C.baseline * 52).toLocaleString();
 
+  // ── Sleep debt ──
+  const debt = sleepDebt();
+  const debtColor = debt < 3 ? 'var(--green)' : debt < 7 ? 'var(--amber)' : 'var(--red)';
+  const debtNote  = debt < 2 ? 'Well rested — sleep debt is low. This helps fat metabolism and recovery significantly.' :
+                    debt < 5 ? 'Moderate sleep debt accumulating. Each hour of deficit slows leptin signalling and fat burning.' :
+                    'High sleep debt — cortisol is elevated and fat loss is blunted. Prioritise sleep this week.';
+  // 14-night breakdown for mini chart
+  const sleepBars = Array.from({length: 14}, (_, i) => {
+    const d     = toISO(daysAgo(14 - i));
+    const entry = wellness.find(w => w.id === d);
+    const h     = entry?.sleepSecs ? entry.sleepSecs / 3600 : 0;
+    const pct   = Math.min(100, Math.round((h / (C.sleepTarget + 1)) * 100));
+    const col   = h >= C.sleepTarget ? 'var(--green)' : h >= C.sleepTarget - 1 ? 'var(--amber)' : h > 0 ? 'var(--red)' : 'var(--border)';
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
+      <div style="width:100%;height:36px;background:var(--bg);border-radius:4px;display:flex;align-items:flex-end;overflow:hidden">
+        <div style="width:100%;height:${pct}%;background:${col};border-radius:4px;transition:height 0.4s"></div>
+      </div>
+    </div>`;
+  }).join('');
+  const sleepDebtCard = `
+    <div class="insight-card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div class="insight-title">Sleep debt (14 nights)</div>
+        <div style="font-size:20px;font-weight:800;color:${debtColor}">${debt.toFixed(1)}h</div>
+      </div>
+      <div style="font-size:12px;color:var(--subtext);margin:2px 0 12px">weighted avg deficit vs ${C.sleepTarget}h target</div>
+      <div style="display:flex;gap:3px;margin-bottom:10px">${sleepBars}</div>
+      <div class="insight-body">${debtNote}</div>
+    </div>`;
+
+  // ── Training-recovery correlation ──
+  const trCorr = trainingRecoveryInsight();
+  let trainingRecovCard = '';
+  if (trCorr) {
+    const azmDiff = trCorr.hiAZM - trCorr.loAZM;
+    const fbDiff  = trCorr.hiFatBurn - trCorr.loFatBurn;
+    trainingRecovCard = `
+      <div class="insight-card">
+        <div class="insight-title">Training quality vs recovery</div>
+        <div class="insight-body" style="margin:6px 0 14px">On days when your HRV is above <strong>${trCorr.threshold} ms</strong>, your sessions are meaningfully stronger.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="text-align:center;padding:12px;background:var(--green-light);border-radius:12px">
+            <div style="font-size:10px;font-weight:700;color:#065F46;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">HRV &ge; ${trCorr.threshold} ms</div>
+            <div style="font-size:22px;font-weight:800;color:#065F46">${trCorr.hiAZM}</div>
+            <div style="font-size:11px;color:#065F46">avg AZM</div>
+            <div style="font-size:16px;font-weight:700;color:#065F46;margin-top:6px">${trCorr.hiFatBurn}m</div>
+            <div style="font-size:11px;color:#065F46">fat burn</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:var(--amber-light);border-radius:12px">
+            <div style="font-size:10px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">HRV &lt; ${trCorr.threshold} ms</div>
+            <div style="font-size:22px;font-weight:800;color:#92400E">${trCorr.loAZM}</div>
+            <div style="font-size:11px;color:#92400E">avg AZM</div>
+            <div style="font-size:16px;font-weight:700;color:#92400E;margin-top:6px">${trCorr.loFatBurn}m</div>
+            <div style="font-size:11px;color:#92400E">fat burn</div>
+          </div>
+        </div>
+        <div class="insight-body" style="margin-top:12px">${azmDiff > 0 ? `Training on high-HRV days earns +${azmDiff} more AZM and +${fbDiff}m more in fat burn zone. Protect sleep to unlock those sessions.` : 'Keep building data — the pattern will sharpen with more training days.'}</div>
+      </div>`;
+  }
+
+  // ── Compound effect projector ──
+  const trend = weightTrend(30);
+  let compoundCard = '';
+  if (trend) {
+    const fatPts90 = wellness.filter(w => fatMassKg(w) != null).sort((a,b) => a.id.localeCompare(b.id));
+    const refFat   = fatPts90.length > 0 ? new Date(fatPts90[0].id + 'T00:00:00').getTime() : null;
+    const fatReg   = refFat ? linearRegression(fatPts90.map(w => ({
+      x: (new Date(w.id + 'T00:00:00').getTime() - refFat) / 86400000,
+      y: fatMassKg(w)
+    }))) : null;
+    const rhrPts90 = wellness.filter(w => w.restingHR != null).sort((a,b) => a.id.localeCompare(b.id));
+    const refRHR   = rhrPts90.length > 0 ? new Date(rhrPts90[0].id + 'T00:00:00').getTime() : null;
+    const rhrReg   = refRHR ? linearRegression(rhrPts90.map(w => ({
+      x: (new Date(w.id + 'T00:00:00').getTime() - refRHR) / 86400000,
+      y: w.restingHR
+    }))) : null;
+    const vo2Pts90 = wellness.filter(w => w.vo2Max != null).sort((a,b) => a.id.localeCompare(b.id));
+    const refVO2   = vo2Pts90.length > 0 ? new Date(vo2Pts90[0].id + 'T00:00:00').getTime() : null;
+    const vo2Reg   = refVO2 ? linearRegression(vo2Pts90.map(w => ({
+      x: (new Date(w.id + 'T00:00:00').getTime() - refVO2) / 86400000,
+      y: w.vo2Max
+    }))) : null;
+
+    const projWt  = trend.currentW + trend.slope * 90;
+    const lastFat  = fatPts90.length ? fatMassKg(fatPts90[fatPts90.length - 1]) : null;
+    const fatDaysFromRef = fatPts90.length ? (new Date().getTime() - refFat) / 86400000 : 0;
+    const projFat  = fatReg ? fatReg.intercept + fatReg.slope * (fatDaysFromRef + 90) : null;
+    const rhrDaysFromRef = rhrPts90.length ? (new Date().getTime() - refRHR) / 86400000 : 0;
+    const projRHR  = rhrReg ? Math.round(rhrReg.intercept + rhrReg.slope * (rhrDaysFromRef + 90)) : null;
+    const vo2DaysFromRef = vo2Pts90.length ? (new Date().getTime() - refVO2) / 86400000 : 0;
+    const projVO2  = vo2Reg ? vo2Reg.intercept + vo2Reg.slope * (vo2DaysFromRef + 90) : null;
+
+    const statBox = (label, current, projected, fmt, goodIfDown) => {
+      if (current == null || projected == null) return '';
+      const diff = projected - current;
+      const good = goodIfDown ? diff < 0 : diff > 0;
+      const col  = good ? 'var(--green)' : diff === 0 ? 'var(--subtext)' : 'var(--amber)';
+      const sign = diff >= 0 ? '+' : '';
+      return `<div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
+        <div style="font-size:10px;font-weight:700;color:var(--subtext);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">${label}</div>
+        <div style="font-size:16px;font-weight:800;color:var(--text)">${fmt(projected)}</div>
+        <div style="font-size:11px;font-weight:600;color:${col};margin-top:3px">${sign}${fmt(diff)}</div>
+      </div>`;
+    };
+
+    const fmtKg   = v => v.toFixed(1) + ' kg';
+    const fmtBpm  = v => Math.round(v) + ' bpm';
+    const fmtVO2f = v => v.toFixed(1);
+    const boxes = [
+      statBox('Weight', trend.currentW, projWt, fmtKg, true),
+      statBox('Fat mass', lastFat, projFat, fmtKg, true),
+      statBox('Resting HR', rhrPts90[rhrPts90.length - 1]?.restingHR, projRHR, fmtBpm, true),
+      statBox('VO2 max', vo2Pts90[vo2Pts90.length - 1]?.vo2Max, projVO2, fmtVO2f, false),
+    ].filter(Boolean).join('');
+
+    const targetHit = trend.daysToGoal && trend.daysToGoal <= 90;
+    const note = targetHit
+      ? `On current trend you hit ${C.goal} kg in ${Math.round(trend.daysToGoal)} days. Keep the conditions consistent.`
+      : `Projections based on your current 30-day trends. Every week of maintained conditions moves these numbers.`;
+
+    if (boxes) {
+      compoundCard = `
+        <div class="insight-card" style="background:linear-gradient(135deg,#1A1A2E 0%,#16213E 100%);color:white">
+          <div class="insight-title" style="color:white">90-day compound effect</div>
+          <div style="font-size:12px;opacity:0.6;margin:4px 0 14px">Where current trends take you</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">${boxes}</div>
+          <div style="font-size:13px;opacity:0.8;line-height:1.55">${note}</div>
+        </div>`;
+    }
+  }
+
   document.getElementById('insights-body').innerHTML = `
+    ${compoundCard}
     ${impactCard}
     ${fatLossBlock}
+    ${sleepDebtCard}
+    ${trainingRecovCard}
     ${startNowCard}
+
+    <div class="insight-card">
+      <div class="insight-title">Weight trajectory</div>
+      <div id="weight-chart-label" style="font-size:12px;color:var(--subtext);margin:4px 0 4px"></div>
+      <div id="weight-proj-label" style="font-size:12px;margin:0 0 10px"></div>
+      <canvas id="weight-chart"></canvas>
+      <div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--primary);font-weight:600">— actual</span>
+        <span style="font-size:11px;color:var(--primary);opacity:0.5;font-weight:600">- - projected</span>
+        <span style="font-size:11px;color:var(--green);font-weight:600">- - 0.75 kg/wk</span>
+        <span style="font-size:11px;color:var(--red);font-weight:600">- - goal ${C.goal} kg</span>
+      </div>
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Body composition</div>
+      <div id="body-comp-sub" style="font-size:12px;color:var(--subtext);margin:4px 0 12px"></div>
+      <canvas id="body-comp-chart"></canvas>
+    </div>
+
     ${patternCard}
 
     <div class="insight-card">
@@ -1947,6 +2483,8 @@ function renderInsights() {
 
   renderRHRChart();
   renderVO2Chart();
+  renderWeightChart();
+  renderBodyCompChart();
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
