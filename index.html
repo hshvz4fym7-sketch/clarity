@@ -398,6 +398,70 @@
 
     .empty { text-align: center; padding: 50px 20px; color: var(--subtext); }
     .empty-icon { font-size: 44px; margin-bottom: 12px; }
+
+    /* ── Event planner chat ── */
+    .ep-messages {
+      max-height: 320px;
+      overflow-y: auto;
+      padding: 4px 0;
+      margin-bottom: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .ep-bubble {
+      padding: 11px 14px;
+      border-radius: 16px;
+      font-size: 14px;
+      line-height: 1.55;
+      max-width: 90%;
+    }
+    .ep-bubble.user { background: var(--primary); color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
+    .ep-bubble.ai   { background: var(--bg); color: var(--text); align-self: flex-start; border-bottom-left-radius: 4px; }
+    .ep-bubble.loading { opacity: 0.55; font-style: italic; }
+    .ep-input-row { display: flex; gap: 8px; margin-top: 4px; }
+    .ep-input {
+      flex: 1;
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 15px;
+      font-family: inherit;
+      color: var(--text);
+      background: white;
+      -webkit-appearance: none;
+    }
+    .ep-input:focus { outline: none; border-color: var(--primary); }
+    .ep-send {
+      background: var(--primary);
+      color: white; border: none;
+      border-radius: 12px;
+      padding: 11px 18px;
+      font-size: 15px; font-weight: 700;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ── Weekly summary card ── */
+    .weekly-card {
+      background: linear-gradient(135deg, #0F2027 0%, #203A43 50%, #2C5364 100%);
+      border-radius: 22px;
+      padding: 20px 20px;
+      margin-bottom: 12px;
+      color: white;
+    }
+    .weekly-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; opacity: 0.55; margin-bottom: 8px; }
+    .weekly-body  { font-size: 14px; line-height: 1.7; opacity: 0.9; }
+    .weekly-actions { margin-top: 12px; display: flex; gap: 8px; }
+    .weekly-btn {
+      background: rgba(255,255,255,0.12);
+      color: white; border: none;
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 12px; font-weight: 600;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
   </style>
 </head>
 <body>
@@ -408,6 +472,7 @@
     <span class="app-title">Clarity</span>
     <div style="display:flex;align-items:center;gap:12px">
       <span class="app-date" id="hdr-date"></span>
+      <button id="btn-sync" onclick="syncWellness()" style="background:none;border:none;cursor:pointer;color:var(--subtext);font-size:18px;line-height:1;padding:2px;-webkit-tap-highlight-color:transparent" title="Sync health data">↻</button>
       <button onclick="openSettings()" style="background:none;border:none;cursor:pointer;color:var(--subtext);font-size:18px;line-height:1;padding:2px" title="Settings">⚙</button>
     </div>
   </header>
@@ -426,10 +491,15 @@
         <div id="target-weeks-row" style="margin-top:10px;font-size:12px;opacity:0.75;min-height:16px"></div>
       </div>
 
+      <div id="weekly-summary-card"></div>
+
       <div class="brief-card">
         <div class="brief-label">Daily brief</div>
         <div class="brief-body loading" id="brief-body">Loading your insight...</div>
-        <button class="brief-refresh" onclick="refreshBrief()">↻ refresh</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <button class="brief-refresh" onclick="refreshBrief()">↻ refresh</button>
+          <button onclick="openEventPlanner()" style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.75);border:none;border-radius:10px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent">📅 Plan an event</button>
+        </div>
       </div>
 
       <div class="metrics-row">
@@ -582,15 +652,34 @@
   </div>
 </div>
 
+<!-- Event planner modal -->
+<div class="modal" id="event-modal" onclick="bgCloseEvent(event)">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>Event game plan</h3>
+      <button class="btn-close" onclick="closeEventPlanner()">✕</button>
+    </div>
+    <div class="ep-messages" id="ep-messages">
+      <div class="ep-bubble ai">Tell me about an upcoming event where drinking will likely happen — what is it, when is it, and what's your goal going in?</div>
+    </div>
+    <div class="ep-input-row">
+      <input class="ep-input" id="ep-input" type="text" placeholder="e.g. work dinner on Friday, want to keep it to 2 drinks..." onkeydown="if(event.key==='Enter')sendEventMessage()">
+      <button class="ep-send" onclick="sendEventMessage()">→</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 // ── Config ────────────────────────────────────────────────────────────────────
 const C = {
-  start:    '2026-05-27',
-  baseline: 75,   // $ per week before change
-  goal:     89,   // target weight kg
-  sleepTarget: 7.5  // hours per night
+  start:       '2026-05-27',
+  baseline:    75,    // $ per week before change
+  goal:        89,    // target weight kg
+  sleepTarget: 7.5,   // hours per night
+  zone2Target: 100,   // weekly Zone 2 (fat burn AZM) minutes target
+  kcalPerDrink: 170,  // calories per standard drink
 };
 
 // Google Health OAuth — client ID is public, secret lives on-device only
@@ -974,6 +1063,13 @@ function rhrRollingAvg(toDateISO, days) {
   return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
 }
 
+// HRV baseline: rolling N-day average for relative comparison
+function hrvBaseline(days) {
+  const cutoff = toISO(daysAgo(days));
+  const vals = wellness.filter(w => w.hrv != null && w.id >= cutoff).map(w => w.hrv);
+  return vals.length >= 3 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+}
+
 // Fat mass in kg from a wellness entry
 function fatMassKg(w) {
   return (w.weight != null && w.bodyFat != null) ? w.weight * w.bodyFat / 100 : null;
@@ -1267,6 +1363,17 @@ async function fetchAIInsight(force) {
     ? `Goal projection: ${C.goal} kg by ${pace.projDate} (${pace.rate.toFixed(2)} kg/week). Drivers: ${pace.factors.map(f => f.label + (f.dir === 1 ? ' (helping)' : f.dir === -1 ? ' (hurting)' : ' (neutral)')).join(', ')}`
     : `Goal projection: insufficient weight data for date — estimated pace ${pace.rate.toFixed(2)} kg/week based on current conditions`;
 
+  // HRV baseline context
+  const base30 = hrvBaseline(30);
+  const latestHRVval = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.hrv;
+  const hrvBaselineContext = (latestHRVval && base30)
+    ? `HRV vs personal baseline: ${latestHRVval.toFixed(1)}ms today, ${base30.toFixed(1)}ms 30d avg (${((latestHRVval - base30) / base30 * 100).toFixed(0)}% deviation)`
+    : '';
+
+  // Zone 2 context
+  const z2mins  = weeklyAZM().fatBurn;
+  const zone2Context = `Zone 2 (fat burn) this week: ${z2mins}m / ${C.zone2Target}m target${z2mins >= C.zone2Target ? ' — target met' : ' — ' + (C.zone2Target - z2mins) + 'm short'}`;
+
   const prompt = `You are a direct, encouraging health coach. I am reducing alcohol to social-only drinking to lose 15+ kg, tracking via Pixel Watch 3. Give me exactly 2-3 sentences. Be specific — use my actual numbers. Note if my projected arrival date has meaningfully shifted and name the factor driving it. No generic advice, no preamble.
 
 Goal: reach ${C.goal} kg (currently ${pace.currentW?.toFixed(1) || '?'} kg)
@@ -1282,8 +1389,8 @@ ${fatMassContext}
 ${bodyCompContext}
 ${weightTrendContext}
 ${sleepDebtContext}
-Weekly active zone minutes: ${weeklyAZM().total} / 150${weeklyAZM().fatBurn ? ` (${weeklyAZM().fatBurn}m in fat burn zone)` : ''}
-VO2 max: ${latestVO2() ? latestVO2().toFixed(1) + ' ml/kg/min' : 'no data yet'}
+Weekly AZM: ${weeklyAZM().total} / 150 · ${zone2Context}
+${hrvBaselineContext ? hrvBaselineContext + '\n' : ''}VO2 max: ${latestVO2() ? latestVO2().toFixed(1) + ' ml/kg/min' : 'no data yet'}
 ${trainingContext ? trainingContext + '\n' : ''}
 Recent drink log:
 ${recentD || 'None logged'}`;
@@ -1369,17 +1476,24 @@ function renderHome() {
     document.getElementById('hero-sub').textContent = `${ago} alcohol-free morning${ago > 1 ? 's' : ''} and counting`;
   }
 
-  // HRV
+  // HRV — show value + % vs 30-day personal baseline
   const recentHrvW = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0];
   const hrv = recentHrvW?.hrv;
   document.getElementById('m-hrv').textContent = hrv ? hrv.toFixed(1) : '--';
-  if (hrv && yesterW?.hrv) {
+  const hrvEl = document.getElementById('m-hrv-d');
+  const base30 = hrvBaseline(30);
+  if (hrv && base30) {
+    const pctVsBase = ((hrv - base30) / base30 * 100).toFixed(0);
+    const sign = pctVsBase >= 0 ? '+' : '';
+    hrvEl.textContent = sign + pctVsBase + '% vs 30d avg';
+    hrvEl.className   = 'metric-delta ' + (pctVsBase >= 0 ? 'up' : 'down');
+  } else if (hrv && yesterW?.hrv) {
     const d = hrv - yesterW.hrv;
-    const el = document.getElementById('m-hrv-d');
-    el.textContent = (d >= 0 ? '↑ ' : '↓ ') + Math.abs(d).toFixed(1) + ' vs yesterday';
-    el.className   = 'metric-delta ' + (d >= 0 ? 'up' : 'down');
+    hrvEl.textContent = (d >= 0 ? '↑ ' : '↓ ') + Math.abs(d).toFixed(1) + ' vs yest';
+    hrvEl.className   = 'metric-delta ' + (d >= 0 ? 'up' : 'down');
   } else {
-    document.getElementById('m-hrv-d').textContent = hrv ? '' : 'Syncing...';
+    hrvEl.textContent = hrv ? '' : 'Syncing...';
+    hrvEl.className   = 'metric-delta neu';
   }
   // Resting HR — 7-day rolling average, delta vs prior 7 days
   const rhrEl = document.getElementById('m-rhr');
@@ -1456,8 +1570,13 @@ function renderHome() {
       const metLabel = azm.total >= azm.target
         ? `<span style="color:var(--green);font-weight:700">✓ target met</span>`
         : `<span style="color:var(--subtext)">${azm.target - azm.total} to go</span>`;
+      const z2Pct  = Math.min(100, Math.round((azm.fatBurn / C.zone2Target) * 100));
+      const z2Col  = azm.fatBurn >= C.zone2Target ? 'var(--green)' : 'var(--primary)';
+      const z2Label = azm.fatBurn >= C.zone2Target
+        ? `<span style="color:var(--green);font-weight:600">✓ Zone 2 done</span>`
+        : `<span style="color:var(--subtext)">${C.zone2Target - azm.fatBurn}m Zone 2 left</span>`;
       const zones = [
-        azm.fatBurn ? `<span style="color:#10B981;font-size:11px;font-weight:600">${azm.fatBurn}m fat burn</span>` : '',
+        azm.fatBurn ? `<span style="color:#10B981;font-size:11px;font-weight:600">${azm.fatBurn}m Zone 2</span>` : '',
         azm.cardio  ? `<span style="color:var(--primary);font-size:11px;font-weight:600">${azm.cardio}m cardio</span>` : '',
         azm.peak    ? `<span style="color:#EF4444;font-size:11px;font-weight:600">${azm.peak}m peak</span>` : '',
       ].filter(Boolean).join('<span style="color:var(--border);margin:0 4px">·</span>');
@@ -1469,10 +1588,17 @@ function renderHome() {
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <div style="font-size:22px;font-weight:800;color:var(--text)">${azm.total}<span style="font-size:13px;font-weight:500;color:var(--subtext)"> / ${azm.target}</span></div>
-            <div style="font-size:12px;color:var(--subtext)">${fatPct}% in fat burn zone</div>
+            <div style="font-size:12px;color:var(--subtext)">${fatPct}% in Zone 2</div>
           </div>
-          <div style="height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin-bottom:8px">
+          <div style="height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin-bottom:6px">
             <div style="height:100%;width:${pct}%;background:${barCol};border-radius:4px;transition:width 0.6s"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-size:11px;color:var(--subtext)">Zone 2 (fat burn): ${azm.fatBurn} / ${C.zone2Target}m</div>
+            <div style="font-size:11px">${z2Label}</div>
+          </div>
+          <div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:8px">
+            <div style="height:100%;width:${z2Pct}%;background:${z2Col};border-radius:3px;transition:width 0.6s"></div>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">${zones}</div>
         </div>`;
@@ -1485,6 +1611,7 @@ function renderHome() {
   document.getElementById('savings').textContent = '$' + savings();
 
   renderMilestone();
+  renderWeeklySummary();
 
   // Weeks on target + passes
   const wot = weeksOnTarget();
@@ -1933,6 +2060,21 @@ function renderWeightGoalCard() {
     <div style="font-size:12px;color:var(--subtext);padding-top:10px;border-top:1px solid var(--border);line-height:1.6">
       ${storyParts.join(' · ')}
     </div>
+
+    ${pace.kgToGo > 0 ? (() => {
+      // How much does one AF day shift the goal date?
+      // AF bonus = +0.20 kg/week = 0.20/7 kg/day = 0.0286 kg/day extra loss
+      const afBonusPerDay = 0.20 / 7;
+      // Each AF day at that extra rate = daysToGoal shrinks by afBonusPerDay / (rate/7)
+      const daysGainedPerAFDay = (afBonusPerDay / (pace.rate / 7)).toFixed(1);
+      const streakAgo = lastDrinkDays();
+      const streakDays = streakAgo !== null ? streakAgo : 0;
+      const streakSaved = (streakDays * parseFloat(daysGainedPerAFDay)).toFixed(0);
+      return `<div style="margin-top:12px;padding:10px 12px;background:var(--primary-light);border-radius:12px;font-size:12px;line-height:1.6">
+        <span style="font-weight:700;color:var(--primary)">Each AF day moves your goal ~${daysGainedPerAFDay} days closer.</span>
+        ${streakDays > 1 ? `<br><span style="color:var(--subtext)">${streakDays}-day streak = goal shifted ~${streakSaved} days forward.</span>` : ''}
+      </div>`;
+    })() : ''}
   `;
 }
 
@@ -2458,13 +2600,15 @@ function renderInsights() {
   const totalActive  = azm.fatBurn + azm.cardio + azm.peak;
   const fatBurnPct   = totalActive > 0 ? Math.round((azm.fatBurn / totalActive) * 100) : null;
 
-  // Conditions score 0-3: AZM target met, >50% fat burn zone, <2 drink sessions
+  // Conditions score 0-4: AZM target met, Zone 2 target met, >50% Zone 2, <2 drink sessions
+  const zone2ThisWeek = azm.fatBurn || 0;
   let condScore = 0;
   if (azm.total >= azm.target) condScore++;
+  if (zone2ThisWeek >= C.zone2Target) condScore++;
   if (fatBurnPct != null && fatBurnPct >= 50) condScore++;
   if (drinkThisWeek <= 1) condScore++;
-  const condLabel = condScore === 3 ? 'Optimal' : condScore === 2 ? 'Good' : condScore === 1 ? 'Mixed' : 'Challenging';
-  const condCol   = condScore === 3 ? 'var(--green)' : condScore === 2 ? 'var(--primary)' : condScore === 1 ? 'var(--amber)' : 'var(--red)';
+  const condLabel = condScore >= 3 ? 'Optimal' : condScore === 2 ? 'Good' : condScore === 1 ? 'Mixed' : 'Challenging';
+  const condCol   = condScore >= 3 ? 'var(--green)' : condScore === 2 ? 'var(--primary)' : condScore === 1 ? 'var(--amber)' : 'var(--red)';
 
   let fatLossBlock = '';
   if (azm.total > 0) {
@@ -2477,21 +2621,83 @@ function renderInsights() {
           <div class="insight-title">Fat loss conditions</div>
           <div style="font-size:13px;font-weight:700;color:${condCol}">${condLabel}</div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
           <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
             <div style="font-size:20px;font-weight:800;color:${azm.total >= azm.target ? 'var(--green)' : 'var(--text)'}">${azm.total}</div>
             <div style="font-size:10px;color:var(--subtext);margin-top:2px">AZM / ${azm.target}</div>
           </div>
           <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
+            <div style="font-size:20px;font-weight:800;color:${zone2ThisWeek >= C.zone2Target ? 'var(--green)' : 'var(--amber)'}">${zone2ThisWeek}<span style="font-size:12px;font-weight:500;color:var(--subtext)">m</span></div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:2px">Zone 2 / ${C.zone2Target}m target</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
             <div style="font-size:20px;font-weight:800;color:${fatBurnPct >= 50 ? 'var(--green)' : 'var(--amber)'}">${fatBurnPct != null ? fatBurnPct + '%' : '--'}</div>
-            <div style="font-size:10px;color:var(--subtext);margin-top:2px">fat burn zone</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:2px">in Zone 2</div>
           </div>
           <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
             <div style="font-size:20px;font-weight:800;color:${drinkThisWeek <= 1 ? 'var(--green)' : drinkThisWeek <= 2 ? 'var(--amber)' : 'var(--red)'}">${drinkThisWeek}</div>
             <div style="font-size:10px;color:var(--subtext);margin-top:2px">session${drinkThisWeek !== 1 ? 's' : ''}</div>
           </div>
         </div>
+        <div style="font-size:12px;color:var(--subtext);margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">Zone 2 = fat-burning heart rate zone (50–60% max HR). Target: ${C.zone2Target}min/week to prime fat oxidation.</div>
         ${hrvLine}
+      </div>`;
+  }
+
+  // ── Alcohol calorie counter + cost-benefit ──
+  const allRealDrinks = drinks.filter(d => !d.base);
+  const recentDrinks  = allRealDrinks.filter(d => d.date >= weekAgoStr);
+  const weekSessions  = recentDrinks.length;
+  const weekDrinkCount = recentDrinks.reduce((s, d) => s + (d.n || 2), 0); // default 2 if not logged
+  const weekKcal      = weekDrinkCount * C.kcalPerDrink;
+  const baselineSessions = Math.round(C.baseline / 35); // ~$35/session = rough baseline
+  const baselineKcalWk   = baselineSessions * 2 * C.kcalPerDrink;
+  const savedKcalWk      = Math.max(0, baselineKcalWk - weekKcal);
+
+  // Fat oxidation suppression: ~12h per 1-2 drinks, 24h for 3-4, 36h+ for 5+
+  const fatOxiHoursLost = recentDrinks.reduce((s, d) => {
+    const n = d.n || 2;
+    return s + (n <= 2 ? 12 : n <= 4 ? 24 : 36);
+  }, 0);
+
+  // HRV cost: avg HRV next morning after drinking sessions
+  const recentDrinkDates = new Set(recentDrinks.map(d => d.date));
+  const hrvAfterRecent = wellness.filter(w => {
+    const prev = toISO(new Date(new Date(w.id + 'T00:00:00').getTime() - 86400000));
+    return w.hrv != null && recentDrinkDates.has(prev);
+  }).map(w => w.hrv);
+  const base30forCost = hrvBaseline(30);
+  const avgHrvAfterDrink = hrvAfterRecent.length
+    ? (hrvAfterRecent.reduce((a, b) => a + b, 0) / hrvAfterRecent.length)
+    : null;
+  const hrvCostPct = (avgHrvAfterDrink && base30forCost)
+    ? ((avgHrvAfterDrink - base30forCost) / base30forCost * 100).toFixed(0)
+    : null;
+
+  let alcoholCostCard = '';
+  if (allRealDrinks.length > 0) {
+    const kcalColor = weekKcal === 0 ? 'var(--green)' : weekKcal < 500 ? 'var(--amber)' : 'var(--red)';
+    const fatOxColor = fatOxiHoursLost === 0 ? 'var(--green)' : fatOxiHoursLost <= 24 ? 'var(--amber)' : 'var(--red)';
+    const hrvCostStr = hrvCostPct != null
+      ? `<div style="font-size:12px;color:var(--subtext);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">HRV next morning after a session: <strong style="color:${Number(hrvCostPct) < -5 ? 'var(--red)' : 'var(--amber)'}">${Number(hrvCostPct) > 0 ? '+' : ''}${hrvCostPct}% vs your baseline</strong></div>`
+      : '';
+    alcoholCostCard = `
+      <div class="insight-card">
+        <div class="insight-title">Alcohol cost this week</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+          <div style="text-align:center;padding:12px;background:var(--bg);border-radius:12px">
+            <div style="font-size:24px;font-weight:800;color:${kcalColor}">${weekKcal}</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:3px">kcal from alcohol</div>
+            ${savedKcalWk > 0 ? `<div style="font-size:11px;color:var(--green);margin-top:4px;font-weight:600">-${savedKcalWk} vs baseline</div>` : ''}
+          </div>
+          <div style="text-align:center;padding:12px;background:var(--bg);border-radius:12px">
+            <div style="font-size:24px;font-weight:800;color:${fatOxColor}">${fatOxiHoursLost}h</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:3px">fat burn suppressed</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:2px">12-36h per session</div>
+          </div>
+        </div>
+        ${weekKcal === 0 ? `<div style="font-size:13px;color:var(--green);font-weight:600;margin-top:10px">Zero alcohol calories this week — fat oxidation running all day.</div>` : `<div style="font-size:12px;color:var(--subtext);margin-top:10px;line-height:1.55">${weekDrinkCount} drink${weekDrinkCount !== 1 ? 's' : ''} = ${weekKcal} kcal + fat burning blocked for ~${fatOxiHoursLost}h. Each standard drink suppresses fat oxidation for 12+ hours while your body prioritises clearing alcohol.</div>`}
+        ${hrvCostStr}
       </div>`;
   }
 
@@ -2631,209 +2837,3 @@ function renderInsights() {
 
   document.getElementById('insights-body').innerHTML = `
     ${compoundCard}
-    ${impactCard}
-    ${fatLossBlock}
-    ${sleepDebtCard}
-    ${trainingRecovCard}
-    ${startNowCard}
-
-    <div class="insight-card">
-      <div class="insight-title">Weight goal</div>
-      <div id="weight-goal-card"></div>
-    </div>
-
-    <div class="insight-card">
-      <div class="insight-title">Body composition</div>
-      <div id="body-comp-sub" style="font-size:12px;color:var(--subtext);margin:4px 0 12px"></div>
-      <canvas id="body-comp-chart"></canvas>
-    </div>
-
-    ${patternCard}
-
-    <div class="insight-card">
-      <div class="insight-title">This week</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:14px">
-        <div>
-          <div class="insight-stat" style="font-size:28px">${drinkThisWeek}</div>
-          <div class="insight-body">session${drinkThisWeek !== 1 ? 's' : ''}</div>
-        </div>
-        <div>
-          <div class="insight-stat" style="font-size:28px;color:var(--green)">${passes.length}</div>
-          <div class="insight-body">passes</div>
-        </div>
-        <div>
-          <div class="insight-stat" style="font-size:28px;color:${avgThis ? 'var(--primary)' : 'var(--subtext)'}">${avgThis ? avgThis.toFixed(0) : '--'}</div>
-          <div class="insight-body">avg HRV</div>
-        </div>
-      </div>
-      <div class="insight-body" style="margin-top:10px">${wot.streak > 0 ? `🎯 ${wot.streak} consecutive week${wot.streak !== 1 ? 's' : ''} on target (≤2 sessions).` : 'A week on target means 2 or fewer sessions.'}</div>
-      ${weekCompare}
-    </div>
-
-    <div class="insight-card">
-      <div class="insight-title">Financial impact</div>
-      <div class="insight-stat">$${savings()}</div>
-      <div class="insight-body">At your old pace that's <strong>$${annualSave}/year</strong> — every alcohol-free day adds ~$${(C.baseline/7).toFixed(2)}.</div>
-    </div>
-
-    <div class="insight-card">
-      <div class="insight-title">Resting HR trend</div>
-      <div class="chart-subtitle" style="font-size:12px;color:var(--subtext);margin:4px 0 10px">7-day rolling avg &nbsp;·&nbsp; 🔶 = drink session</div>
-      <canvas id="rhr-chart"></canvas>
-    </div>
-
-    <div class="insight-card">
-      <div class="insight-title">Cardiovascular fitness (VO2 max)</div>
-      <div id="vo2-band-label" style="font-size:12px;color:var(--subtext);margin:4px 0 10px"></div>
-      <canvas id="vo2-chart"></canvas>
-    </div>
-  `;
-
-  renderRHRChart();
-  renderVO2Chart();
-  renderWeightGoalCard();
-  renderBodyCompChart();
-}
-
-// ── Modal ─────────────────────────────────────────────────────────────────────
-function openModal() {
-  document.getElementById('f-date').value  = toISO(new Date());
-  document.getElementById('f-cost').value  = '';
-  document.getElementById('f-notes').value = '';
-  stepN = 2;
-  document.getElementById('step-val').textContent = 2;
-  ctx = 'social';
-  document.querySelectorAll('.pill').forEach(p => p.classList.toggle('on', p.dataset.ctx === 'social'));
-  document.getElementById('modal').classList.add('open');
-}
-function closeModal()    { document.getElementById('modal').classList.remove('open'); }
-function bgClose(e)      { if (e.target === document.getElementById('modal')) closeModal(); }
-function step(d)         { stepN = Math.max(1, Math.min(20, stepN+d)); document.getElementById('step-val').textContent = stepN; }
-function pickCtx(el)     { document.querySelectorAll('.pill').forEach(p => p.classList.remove('on')); el.classList.add('on'); ctx = el.dataset.ctx; }
-
-function saveDrink() {
-  const date = document.getElementById('f-date').value;
-  if (!date) { toast('Pick a date'); return; }
-  const entry = {
-    id:   uid(),
-    date,
-    n:    stepN,
-    ctx,
-    cost: parseFloat(document.getElementById('f-cost').value) || null,
-    note: document.getElementById('f-notes').value.trim(),
-    base: false
-  };
-  drinks.push(entry);
-  drinks.sort((a,b) => b.date.localeCompare(a.date));
-  persist(drinks);
-  closeModal();
-  toast('Session logged ✓');
-  renderHome(); renderLog(); renderInsights();
-}
-
-function del(id) {
-  drinks = drinks.filter(d => d.id !== id);
-  persist(drinks);
-  renderLog(); renderHome(); renderInsights();
-  toast('Removed');
-}
-
-// ── Coaching prompt ───────────────────────────────────────────────────────────
-
-// ── Settings ──────────────────────────────────────────────────────────────────
-function openSettings() {
-  const ghEl = document.getElementById('f-gh-secret');
-  if (ghEl) {
-    ghEl.value = getGHSecret() ? '••••••••••••••••' : '';
-    ghEl.placeholder = getGHSecret() ? 'Secret saved — paste to replace' : 'GOCSPX-...';
-  }
-  const connectBtn = document.getElementById('btn-gh-connect');
-  if (connectBtn) connectBtn.textContent = ghConnected() ? '✓ Connected — Reconnect' : 'Connect Google Health';
-
-  const oaiEl = document.getElementById('f-oai-key');
-  if (oaiEl) {
-    oaiEl.value = getOAIKey() ? '••••••••••••••••' : '';
-    oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
-  }
-
-  document.getElementById('settings-modal').classList.add('open');
-}
-function closeSettings()    { document.getElementById('settings-modal').classList.remove('open'); }
-function bgCloseSettings(e) { if (e.target === document.getElementById('settings-modal')) closeSettings(); }
-
-function saveSettings() {
-  const ghVal = document.getElementById('f-gh-secret').value.trim();
-  if (ghVal && !ghVal.startsWith('••')) {
-    setGHSecret(ghVal);
-    toast('Client secret saved ✓');
-  }
-
-  const oaiVal = document.getElementById('f-oai-key').value.trim();
-  if (oaiVal && !oaiVal.startsWith('••')) {
-    if (!oaiVal.startsWith('sk-')) { toast('That doesn\'t look like a valid OpenAI key'); return; }
-    setOAIKey(oaiVal);
-    localStorage.removeItem('clarity_brief_' + toISO(new Date()));
-  }
-
-  closeSettings();
-  if (getOAIKey()) renderBrief(true);
-}
-
-// ── Navigation ────────────────────────────────────────────────────────────────
-function goTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  document.getElementById('nb-'  + name).classList.add('active');
-  if (name === 'log')      renderLog();
-  if (name === 'insights') renderInsights();
-}
-
-// ── Toast ─────────────────────────────────────────────────────────────────────
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
-}
-
-// ── Boot ──────────────────────────────────────────────────────────────────────
-async function boot() {
-  // Handle Google OAuth callback
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('code') && urlParams.get('state') === 'clarity_gh') {
-    history.replaceState({}, '', window.location.pathname);
-    const ok = await exchangeGHCode(urlParams.get('code'));
-    if (ok) toast('Google Health connected ✓');
-    else    toast('Connection failed — check client secret');
-  }
-
-  drinks  = loadDrinks();
-  passes  = loadPasses();
-  renderHome(); renderLog();
-
-  wellness = await fetchWellness();
-  renderHome(); renderInsights();
-
-  if (!getOAIKey()) {
-    openSettings();
-  } else {
-    renderBrief(false);
-  }
-}
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').then(reg => {
-    reg.addEventListener('updatefound', () => {
-      const newSW = reg.installing;
-      newSW.addEventListener('statechange', () => {
-        // New SW has taken control — reload to get fresh HTML
-        if (newSW.state === 'activated') location.reload();
-      });
-    });
-  }).catch(() => {});
-}
-
-boot();
-</script>
-</body>
-</html>
