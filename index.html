@@ -452,6 +452,8 @@
         </div>
       </div>
 
+      <div id="azm-card"></div>
+
       <div class="savings-card">
         <div>
           <div class="savings-amount" id="savings">$0.00</div>
@@ -842,11 +844,13 @@ async function fetchWellness() {
 
   const cutoff = toISO(daysAgo(90));
 
-  const [weightPts, fatPts, hrvPts, sleepPts] = await Promise.all([
+  const [weightPts, fatPts, hrvPts, sleepPts, azmPts, vo2Pts] = await Promise.all([
     ghFetch(token, 'weight'),
     ghFetch(token, 'body-fat'),
     ghFetch(token, 'daily-heart-rate-variability'),
     ghFetch(token, 'sleep'),
+    ghFetch(token, 'active-zone-minutes'),
+    ghFetch(token, 'vo2-max'),
   ]);
 
   const byDate = {};
@@ -908,6 +912,32 @@ async function fetchWellness() {
     }
   }
 
+  // Active zone minutes: each point = 1 min in a HR zone, aggregate by day
+  // Zones: FAT_BURN (1 AZM) | CARDIO (2 AZM) | PEAK (2 AZM)
+  for (const pt of azmPts) {
+    const data = pt.activeZoneMinutes;
+    const d = civilDateToISO(data?.interval?.civilStartTime?.date);
+    if (!d || d < cutoff) continue;
+    ensure(d);
+    const mins = parseInt(data?.activeZoneMinutes || 0);
+    const zone = data?.heartRateZone;
+    if (zone === 'FAT_BURN') byDate[d].fatBurnMins = (byDate[d].fatBurnMins || 0) + mins;
+    else if (zone === 'CARDIO') byDate[d].cardioMins = (byDate[d].cardioMins || 0) + mins;
+    else if (zone === 'PEAK')   byDate[d].peakMins   = (byDate[d].peakMins   || 0) + mins;
+    // totalAZM: fat burn = 1 AZM/min, cardio/peak = 2 AZM/min
+    const azmValue = (zone === 'CARDIO' || zone === 'PEAK') ? mins * 2 : mins;
+    byDate[d].totalAZM = (byDate[d].totalAZM || 0) + azmValue;
+  }
+
+  // VO2 max: periodic estimate from watch, date via sampleTime.civilTime.date
+  for (const pt of vo2Pts) {
+    const data = pt.vo2Max;
+    const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
+    if (!d || d < cutoff) continue;
+    ensure(d);
+    if (data?.vo2Max != null) byDate[d].vo2Max = data.vo2Max;
+  }
+
   return Object.values(byDate).sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -915,6 +945,24 @@ async function fetchWellness() {
 function toISO(d)     { return d.toISOString().split('T')[0]; }
 function daysAgo(n)   { const d = new Date(); d.setDate(d.getDate() - n); return d; }
 function daysBetween(a, b) { return Math.floor((b - a) / 86400000); }
+
+// Weekly AZM totals (rolling 7 days)
+function weeklyAZM() {
+  const cutoff = toISO(daysAgo(7));
+  const week = wellness.filter(w => w.id >= cutoff);
+  return {
+    total:    week.reduce((s, w) => s + (w.totalAZM   || 0), 0),
+    fatBurn:  week.reduce((s, w) => s + (w.fatBurnMins || 0), 0),
+    cardio:   week.reduce((s, w) => s + (w.cardioMins  || 0), 0),
+    peak:     week.reduce((s, w) => s + (w.peakMins    || 0), 0),
+    target: 150,
+  };
+}
+
+// Latest VO2 max reading
+function latestVO2() {
+  return [...wellness].filter(w => w.vo2Max != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.vo2Max ?? null;
+}
 
 // Rolling N-day average RHR ending on toDateISO (inclusive)
 function rhrRollingAvg(toDateISO, days) {
@@ -1000,6 +1048,7 @@ function startVsNow() {
     sleep:   { then: avg(first, 'sleepSecs'), now: avg(last, 'sleepSecs') },
     weight:  { then: avg(first, 'weight'),    now: avg(last, 'weight') },
     fatMass: { then: avgFatMass(first),       now: avgFatMass(last) },
+    vo2Max:  { then: avg(first, 'vo2Max'),    now: avg(last, 'vo2Max') },
   };
 }
 
@@ -1106,6 +1155,8 @@ ${recentW || 'No data yet'}
 
 ${rhrContext}
 ${fatMassContext}
+Weekly active zone minutes: ${weeklyAZM().total} / 150${weeklyAZM().fatBurn ? ` (${weeklyAZM().fatBurn}m in fat burn zone)` : ''}
+VO2 max: ${latestVO2() ? latestVO2().toFixed(1) + ' ml/kg/min' : 'no data yet'}
 
 Recent drink log:
 ${recentD || 'None logged'}`;
@@ -1263,6 +1314,43 @@ function renderHome() {
       bfEl.className   = 'metric-delta ' + (!diff ? 'neu' : diff <= 0 ? 'up' : 'down');
     } else {
       bfEl.textContent = '';
+    }
+  }
+
+  // Weekly AZM progress card
+  const azmEl = document.getElementById('azm-card');
+  if (azmEl) {
+    const azm = weeklyAZM();
+    if (azm.total > 0) {
+      const pct = Math.min(100, Math.round((azm.total / azm.target) * 100));
+      const barCol = azm.total >= azm.target ? 'var(--green)' : 'var(--primary)';
+      const totalActive = azm.fatBurn + azm.cardio + azm.peak;
+      const fatPct = totalActive > 0 ? Math.round((azm.fatBurn / totalActive) * 100) : 0;
+      const metLabel = azm.total >= azm.target
+        ? `<span style="color:var(--green);font-weight:700">✓ target met</span>`
+        : `<span style="color:var(--subtext)">${azm.target - azm.total} to go</span>`;
+      const zones = [
+        azm.fatBurn ? `<span style="color:#10B981;font-size:11px;font-weight:600">${azm.fatBurn}m fat burn</span>` : '',
+        azm.cardio  ? `<span style="color:var(--primary);font-size:11px;font-weight:600">${azm.cardio}m cardio</span>` : '',
+        azm.peak    ? `<span style="color:#EF4444;font-size:11px;font-weight:600">${azm.peak}m peak</span>` : '',
+      ].filter(Boolean).join('<span style="color:var(--border);margin:0 4px">·</span>');
+      azmEl.innerHTML = `
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <div style="font-size:13px;font-weight:700">Weekly active zone minutes</div>
+            <div style="font-size:13px">${metLabel}</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div style="font-size:22px;font-weight:800;color:var(--text)">${azm.total}<span style="font-size:13px;font-weight:500;color:var(--subtext)"> / ${azm.target}</span></div>
+            <div style="font-size:12px;color:var(--subtext)">${fatPct}% in fat burn zone</div>
+          </div>
+          <div style="height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin-bottom:8px">
+            <div style="height:100%;width:${pct}%;background:${barCol};border-radius:4px;transition:width 0.6s"></div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${zones}</div>
+        </div>`;
+    } else {
+      azmEl.innerHTML = '';
     }
   }
 
@@ -1573,11 +1661,13 @@ function renderInsights() {
     const fmtSlp = v => (v/3600).toFixed(1) + 'h';
     const fmtWt  = v => v.toFixed(1) + ' kg';
     const fmtFat = v => v.toFixed(1) + ' kg';
+    const fmtVO2 = v => v.toFixed(1) + ' ml/kg/min';
     const rows = [
       row('HRV',      svn.hrv.then,     svn.hrv.now,     fmtHrv, false),
       row('Sleep',    svn.sleep.then,   svn.sleep.now,   fmtSlp, false),
       row('Weight',   svn.weight.then,  svn.weight.now,  fmtWt,  true),
       row('Fat mass', svn.fatMass.then, svn.fatMass.now, fmtFat, true),
+      row('VO2 max',  svn.vo2Max.then,  svn.vo2Max.now,  fmtVO2, false),
     ].filter(Boolean).join('');
     if (rows) {
       startNowCard = `
@@ -1629,11 +1719,61 @@ function renderInsights() {
        </div>`
     : '';
 
+  // ── Fat loss conditions this week ──
+  const azm = weeklyAZM();
+  const vo2 = latestVO2();
+  const trainingDays = wellness.filter(w => w.id >= weekAgoStr && (w.totalAZM || 0) > 0);
+  const restDays     = wellness.filter(w => w.id >= weekAgoStr && !(w.totalAZM > 0));
+  const avgTrainHRV  = avgFn(trainingDays.filter(w => w.hrv != null).map(w => w.hrv));
+  const avgRestHRV   = avgFn(restDays.filter(w => w.hrv != null).map(w => w.hrv));
+  const totalActive  = azm.fatBurn + azm.cardio + azm.peak;
+  const fatBurnPct   = totalActive > 0 ? Math.round((azm.fatBurn / totalActive) * 100) : null;
+
+  // Conditions score 0-3: AZM target met, >50% fat burn zone, <2 drink sessions
+  let condScore = 0;
+  if (azm.total >= azm.target) condScore++;
+  if (fatBurnPct != null && fatBurnPct >= 50) condScore++;
+  if (drinkThisWeek <= 1) condScore++;
+  const condLabel = condScore === 3 ? 'Optimal' : condScore === 2 ? 'Good' : condScore === 1 ? 'Mixed' : 'Challenging';
+  const condCol   = condScore === 3 ? 'var(--green)' : condScore === 2 ? 'var(--primary)' : condScore === 1 ? 'var(--amber)' : 'var(--red)';
+
+  let fatLossBlock = '';
+  if (azm.total > 0) {
+    const hrvLine = avgTrainHRV && avgRestHRV
+      ? `<div class="insight-body" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">HRV on training days: <strong>${avgTrainHRV.toFixed(0)} ms</strong> vs rest days: <strong>${avgRestHRV.toFixed(0)} ms</strong>${avgTrainHRV < avgRestHRV ? ' — training on accumulated fatigue.' : ' — good recovery balance.'}</div>`
+      : '';
+    const vo2Line = vo2 ? `<div class="insight-body" style="margin-top:6px">Current VO2 max: <strong>${vo2.toFixed(1)} ml/kg/min</strong></div>` : '';
+    fatLossBlock = `
+      <div class="insight-card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="insight-title">Fat loss conditions</div>
+          <div style="font-size:13px;font-weight:700;color:${condCol}">${condLabel}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px">
+          <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
+            <div style="font-size:20px;font-weight:800;color:${azm.total >= azm.target ? 'var(--green)' : 'var(--text)'}">${azm.total}</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:2px">AZM / ${azm.target}</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
+            <div style="font-size:20px;font-weight:800;color:${fatBurnPct >= 50 ? 'var(--green)' : 'var(--amber)'}">${fatBurnPct != null ? fatBurnPct + '%' : '--'}</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:2px">fat burn zone</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
+            <div style="font-size:20px;font-weight:800;color:${drinkThisWeek <= 1 ? 'var(--green)' : drinkThisWeek <= 2 ? 'var(--amber)' : 'var(--red)'}">${drinkThisWeek}</div>
+            <div style="font-size:10px;color:var(--subtext);margin-top:2px">session${drinkThisWeek !== 1 ? 's' : ''}</div>
+          </div>
+        </div>
+        ${hrvLine}
+        ${vo2Line}
+      </div>`;
+  }
+
   const wot = weeksOnTarget();
   const annualSave = (C.baseline * 52).toLocaleString();
 
   document.getElementById('insights-body').innerHTML = `
     ${impactCard}
+    ${fatLossBlock}
     ${startNowCard}
     ${patternCard}
 
