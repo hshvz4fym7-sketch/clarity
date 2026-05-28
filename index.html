@@ -816,37 +816,38 @@ async function fetchWellness() {
     if (g != null) byDate[d].weight = g / 1000;
   }
 
-  // Body fat: camelCase field = bodyFat
+  // Body fat: pt.bodyFat.sampleTime.civilTime.date, value: percentage
   for (const pt of fatPts) {
     const data = pt.bodyFat;
     const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
     if (!d || d < cutoff) continue;
     ensure(d);
-    const pct = data?.bodyFatPercentage ?? data?.percentage;
-    if (pct != null) byDate[d].bodyFat = pct;
+    if (data?.percentage != null) byDate[d].bodyFat = data.percentage;
   }
 
-  // HRV: camelCase field = dailyHeartRateVariability
+  // HRV: date is pt.dailyHeartRateVariability.date (not nested in sampleTime)
+  //      value: averageHeartRateVariabilityMilliseconds
   for (const pt of hrvPts) {
     const data = pt.dailyHeartRateVariability;
-    const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
+    const d = civilDateToISO(data?.date);
     if (!d || d < cutoff) continue;
     ensure(d);
-    const rmssd = data?.rmssd ?? data?.hrv ?? data?.milliseconds;
-    if (rmssd != null) byDate[d].hrv = rmssd;
+    const ms = data?.averageHeartRateVariabilityMilliseconds;
+    if (ms != null) byDate[d].hrv = ms;
   }
 
-  // Sleep: attributed to wake-up date, duration in seconds
+  // Sleep: date from interval.endTime + endUtcOffset (local wake-up date)
+  //        duration from summary.minutesAsleep (string, convert to seconds)
   for (const pt of sleepPts) {
     const data = pt.sleep;
-    if (!data) continue;
-    const d = civilDateToISO(data?.sampleTime?.civilTime?.date);
-    if (!d || d < cutoff) continue;
+    if (!data?.interval) continue;
+    const offsetSecs = parseInt(data.interval.endUtcOffset) || 0;
+    const localEnd = new Date(new Date(data.interval.endTime).getTime() + offsetSecs * 1000);
+    const d = localEnd.toISOString().split('T')[0];
+    if (d < cutoff) continue;
     ensure(d);
-    const dur = data?.durationSeconds ?? data?.duration;
-    if (dur != null && dur > 3600) byDate[d].sleepSecs = Math.max(byDate[d].sleepSecs || 0, dur);
-    const score = data?.score ?? data?.sleepScore;
-    if (score != null) byDate[d].sleepScore = score;
+    const secs = parseInt(data.summary?.minutesAsleep || 0) * 60;
+    if (secs > 3600) byDate[d].sleepSecs = Math.max(byDate[d].sleepSecs || 0, secs);
   }
 
   return Object.values(byDate).sort((a, b) => a.id.localeCompare(b.id));
