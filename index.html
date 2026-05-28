@@ -668,6 +668,7 @@ let drinks   = [];
 let passes   = [];
 let chart    = null;
 let rhrChart = null;
+let vo2Chart = null;
 let stepN    = 2;
 let ctx      = 'social';
 
@@ -1549,6 +1550,136 @@ function renderRHRChart() {
   });
 }
 
+// ── Render: VO2 Max Chart (Insights) ─────────────────────────────────────────
+// Population norms for males 40-49 (ACSM)
+const VO2_BANDS = [
+  { label: 'Superior', min: 50.0, col: '#10B981' },
+  { label: 'Excellent', min: 45.0, col: '#4F46E5' },
+  { label: 'Good',      min: 41.0, col: '#F59E0B' },
+  { label: 'Fair',      min: 37.0, col: '#F97316' },
+  { label: 'Poor',      min: 0,    col: '#EF4444' },
+];
+function vo2Band(v) { return VO2_BANDS.find(b => v >= b.min) || VO2_BANDS[VO2_BANDS.length - 1]; }
+
+function renderVO2Chart() {
+  if (typeof Chart === 'undefined') return;
+  const canvas = document.getElementById('vo2-chart');
+  if (!canvas) return;
+
+  const pts = wellness
+    .filter(w => w.vo2Max != null)
+    .sort((a,b) => a.id.localeCompare(b.id));
+
+  const labelEl = document.getElementById('vo2-band-label');
+  if (pts.length < 2) {
+    if (labelEl) labelEl.textContent = 'Not enough readings yet — check back as more sync.';
+    return;
+  }
+
+  const latest = pts[pts.length - 1].vo2Max;
+  const band   = vo2Band(latest);
+  const nextBand = VO2_BANDS[VO2_BANDS.indexOf(band) - 1];
+  if (labelEl) {
+    const toNext = nextBand ? ` · ${(nextBand.min - latest).toFixed(1)} away from ${nextBand.label}` : ' · Peak category';
+    labelEl.innerHTML = `<span style="font-weight:700;color:${band.col}">${band.label}</span> for men 40–49${toNext}`;
+  }
+
+  const labels = pts.map(p =>
+    new Date(p.id + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
+  );
+  const values = pts.map(p => +p.vo2Max.toFixed(2));
+
+  const yMin = Math.min(Math.floor(Math.min(...values) - 2), 36);
+  const yMax = Math.ceil(Math.max(...values) + 2);
+
+  // Reference lines for band thresholds that fall within the chart range
+  const annotations = VO2_BANDS.slice(0, -1)
+    .filter(b => b.min >= yMin && b.min <= yMax)
+    .map(b => ({
+      type: 'line',
+      yMin: b.min, yMax: b.min,
+      borderColor: b.col,
+      borderWidth: 1,
+      borderDash: [4, 4],
+      label: { content: b.label, enabled: true, position: 'end', color: b.col, font: { size: 10 } }
+    }));
+
+  if (vo2Chart) vo2Chart.destroy();
+  vo2Chart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: '#4F46E5',
+        borderWidth: 2.5,
+        pointBackgroundColor: values.map(v => vo2Band(v).col),
+        pointBorderColor:     values.map(v => vo2Band(v).col),
+        pointRadius: 5,
+        pointHoverRadius: 8,
+        tension: 0.35,
+        fill: false
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      aspectRatio: 2.8,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.raw} ml/kg/min — ${vo2Band(c.raw).label}`
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 11 }, maxRotation: 0, maxTicksLimit: 6 } },
+        y: {
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { font: { size: 11 } },
+          min: yMin,
+          max: yMax,
+          afterDataLimits(scale) {
+            // Draw band threshold lines as grid-style backgrounds
+          }
+        }
+      }
+    }
+  });
+
+  // Draw band threshold lines manually on the chart canvas after render
+  // (Chart.js annotation plugin not available — use afterDraw)
+  const originalDraw = vo2Chart.draw.bind(vo2Chart);
+  vo2Chart.draw = function() {
+    originalDraw();
+    const ctx2 = canvas.getContext('2d');
+    const yScale = vo2Chart.scales.y;
+    const xStart = vo2Chart.chartArea.left;
+    const xEnd   = vo2Chart.chartArea.right;
+    VO2_BANDS.slice(0, -1).forEach(b => {
+      if (b.min < yMin || b.min > yMax) return;
+      const y = yScale.getPixelForValue(b.min);
+      ctx2.save();
+      ctx2.strokeStyle = b.col;
+      ctx2.lineWidth = 1;
+      ctx2.setLineDash([4, 4]);
+      ctx2.globalAlpha = 0.5;
+      ctx2.beginPath();
+      ctx2.moveTo(xStart, y);
+      ctx2.lineTo(xEnd, y);
+      ctx2.stroke();
+      ctx2.globalAlpha = 0.8;
+      ctx2.fillStyle = b.col;
+      ctx2.font = '10px -apple-system, sans-serif';
+      ctx2.textAlign = 'right';
+      ctx2.fillText(b.label, xEnd - 4, y - 3);
+      ctx2.restore();
+    });
+  };
+  vo2Chart.draw();
+}
+
 // ── Render: Log ───────────────────────────────────────────────────────────────
 function renderLog() {
   const el = document.getElementById('drink-list');
@@ -1661,7 +1792,7 @@ function renderInsights() {
     const fmtSlp = v => (v/3600).toFixed(1) + 'h';
     const fmtWt  = v => v.toFixed(1) + ' kg';
     const fmtFat = v => v.toFixed(1) + ' kg';
-    const fmtVO2 = v => v.toFixed(1) + ' ml/kg/min';
+    const fmtVO2 = v => v.toFixed(1) + ' (' + vo2Band(v).label + ')';
     const rows = [
       row('HRV',      svn.hrv.then,     svn.hrv.now,     fmtHrv, false),
       row('Sleep',    svn.sleep.then,   svn.sleep.now,   fmtSlp, false),
@@ -1742,7 +1873,6 @@ function renderInsights() {
     const hrvLine = avgTrainHRV && avgRestHRV
       ? `<div class="insight-body" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">HRV on training days: <strong>${avgTrainHRV.toFixed(0)} ms</strong> vs rest days: <strong>${avgRestHRV.toFixed(0)} ms</strong>${avgTrainHRV < avgRestHRV ? ' — training on accumulated fatigue.' : ' — good recovery balance.'}</div>`
       : '';
-    const vo2Line = vo2 ? `<div class="insight-body" style="margin-top:6px">Current VO2 max: <strong>${vo2.toFixed(1)} ml/kg/min</strong></div>` : '';
     fatLossBlock = `
       <div class="insight-card">
         <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1764,7 +1894,6 @@ function renderInsights() {
           </div>
         </div>
         ${hrvLine}
-        ${vo2Line}
       </div>`;
   }
 
@@ -1808,9 +1937,16 @@ function renderInsights() {
       <div class="chart-subtitle" style="font-size:12px;color:var(--subtext);margin:4px 0 10px">7-day rolling avg &nbsp;·&nbsp; 🔶 = drink session</div>
       <canvas id="rhr-chart"></canvas>
     </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Cardiovascular fitness (VO2 max)</div>
+      <div id="vo2-band-label" style="font-size:12px;color:var(--subtext);margin:4px 0 10px"></div>
+      <canvas id="vo2-chart"></canvas>
+    </div>
   `;
 
   renderRHRChart();
+  renderVO2Chart();
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
