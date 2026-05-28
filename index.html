@@ -1346,27 +1346,48 @@ function renderRHRChart() {
   );
   const values = rollingPts.map(p => +p.rhr.toFixed(1));
 
-  const afterDrink = rollingPts.map(p => {
+  const yMin = Math.floor(Math.min(...values) - 6);
+  const yMax = Math.ceil(Math.max(...values) + 4);
+  const markerY = yMin + 1; // drink markers sit just above the bottom edge
+
+  // Drink event markers: amber triangle at bottom of chart on days after a session
+  const drinkMarkers = rollingPts.map(p => {
     const prev = new Date(p.id + 'T12:00:00'); prev.setDate(prev.getDate() - 1);
-    return drinkNights.has(toISO(prev));
+    return drinkNights.has(toISO(prev)) ? markerY : null;
   });
+  const hasDrinkData = drinkMarkers.some(v => v != null);
 
   if (rhrChart) rhrChart.destroy();
   rhrChart = new Chart(canvas.getContext('2d'), {
     type: 'line',
     data: {
       labels,
-      datasets: [{
-        data: values,
-        borderColor: '#4F46E5',
-        borderWidth: 2.5,
-        pointBackgroundColor: afterDrink.map(d => d ? '#F59E0B' : '#4F46E5'),
-        pointBorderColor:     afterDrink.map(d => d ? '#F59E0B' : '#4F46E5'),
-        pointRadius:          afterDrink.map(d => d ? 7 : 3),
-        pointHoverRadius: 9,
-        tension: 0.35,
-        fill: false
-      }]
+      datasets: [
+        // Trend line — clean, no per-point colour changes
+        {
+          data: values,
+          borderColor: '#4F46E5',
+          borderWidth: 2.5,
+          pointBackgroundColor: '#4F46E5',
+          pointBorderColor: '#4F46E5',
+          pointRadius: 3,
+          pointHoverRadius: 7,
+          tension: 0.35,
+          fill: false,
+          order: 1
+        },
+        // Drink event markers at the bottom — separate visual layer
+        ...(hasDrinkData ? [{
+          data: drinkMarkers,
+          showLine: false,
+          pointStyle: 'triangle',
+          pointBackgroundColor: '#F59E0B',
+          pointBorderColor: '#F59E0B',
+          pointRadius: 6,
+          pointHoverRadius: 8,
+          order: 2
+        }] : [])
+      ]
     },
     options: {
       responsive: true,
@@ -1376,7 +1397,9 @@ function renderRHRChart() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: c => `${c.raw} bpm (7d avg)${afterDrink[c.dataIndex] ? '  · after drinking' : ''}`
+            label: c => c.datasetIndex === 0
+              ? `${c.raw} bpm (7d avg)`
+              : 'Drink session'
           }
         }
       },
@@ -1384,9 +1407,12 @@ function renderRHRChart() {
         x: { grid: { display: false }, ticks: { font: { size: 11 }, maxRotation: 0, maxTicksLimit: 8 } },
         y: {
           grid: { color: 'rgba(0,0,0,0.05)' },
-          ticks: { font: { size: 11 } },
-          min: Math.floor(Math.min(...values) - 4),
-          max: Math.ceil(Math.max(...values) + 4)
+          ticks: {
+            font: { size: 11 },
+            callback: (v) => v === markerY ? '' : v  // hide the marker row tick label
+          },
+          min: yMin,
+          max: yMax
         }
       }
     }
@@ -1597,7 +1623,7 @@ function renderInsights() {
 
     <div class="insight-card">
       <div class="insight-title">Resting HR trend</div>
-      <div class="chart-subtitle" style="font-size:12px;color:var(--subtext);margin:4px 0 10px">7-day rolling avg &nbsp;·&nbsp; 🟡 = morning after drinking</div>
+      <div class="chart-subtitle" style="font-size:12px;color:var(--subtext);margin:4px 0 10px">7-day rolling avg &nbsp;·&nbsp; 🔶 = drink session</div>
       <canvas id="rhr-chart"></canvas>
     </div>
   `;
