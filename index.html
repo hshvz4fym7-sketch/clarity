@@ -648,7 +648,12 @@
 
     <button class="btn-primary" onclick="saveSettings()">Save</button>
     <button onclick="showGHStatus()" style="display:block;width:100%;margin-top:10px;padding:12px;background:none;border:1.5px solid var(--border);border-radius:10px;color:var(--subtext);font-size:14px;cursor:pointer">Show API status</button>
-    <button onclick="closeSettings()" style="display:block;width:100%;margin-top:10px;padding:12px;background:none;border:none;color:var(--subtext);font-size:15px;cursor:pointer">Cancel</button>
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext);margin-bottom:10px">Progress check-in</div>
+      <button onclick="copy6WeekSummary()" style="display:block;width:100%;padding:14px;background:var(--primary-light);border:none;border-radius:12px;color:var(--primary);font-size:15px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent">📋 Copy 6-week summary</button>
+      <div style="font-size:12px;color:var(--subtext);margin-top:8px;line-height:1.5">Copies weight, compliance, training and recovery stats to your clipboard — paste into a conversation to review progress.</div>
+    </div>
+    <button onclick="closeSettings()" style="display:block;width:100%;margin-top:16px;padding:12px;background:none;border:none;color:var(--subtext);font-size:15px;cursor:pointer">Cancel</button>
   </div>
 </div>
 
@@ -3138,6 +3143,85 @@ function openSettings() {
 }
 function closeSettings()    { document.getElementById('settings-modal').classList.remove('open'); }
 function bgCloseSettings(e) { if (e.target === document.getElementById('settings-modal')) closeSettings(); }
+
+// ── 6-week progress summary export ───────────────────────────────────────────
+function copy6WeekSummary() {
+  const sixWeeksAgo = toISO(daysAgo(42));
+  const today       = toISO(new Date());
+
+  // Weight
+  const allWt      = wellness.filter(w => w.weight != null).sort((a,b) => a.id.localeCompare(b.id));
+  const wtWindow   = allWt.filter(w => w.id >= sixWeeksAgo);
+  const firstWt    = wtWindow[0]?.weight;
+  const lastWt     = wtWindow[wtWindow.length - 1]?.weight;
+  const wtChange   = (firstWt != null && lastWt != null) ? (lastWt - firstWt).toFixed(1) : null;
+  const wtSign     = wtChange !== null && parseFloat(wtChange) > 0 ? '+' : '';
+
+  // Days in window + compliance
+  const windowDays    = Math.min(42, daysBetween(new Date(sixWeeksAgo + 'T00:00:00'), new Date()) + 1);
+  const windowDrinks  = drinks.filter(d => !d.base && d.date >= sixWeeksAgo);
+  const drinkSessions = windowDrinks.length;
+  const totalDrinks   = windowDrinks.reduce((s, d) => s + (d.n || 2), 0);
+  const drinkDays     = new Set(windowDrinks.map(d => d.date)).size;
+  const afDays        = windowDays - drinkDays;
+  const afPct         = Math.round(afDays / windowDays * 100);
+  const avgPerSession = drinkSessions > 0 ? (totalDrinks / drinkSessions).toFixed(1) : '0';
+  const streak        = lastDrinkDays();
+
+  // AZM — daily readings, compute weekly averages
+  const azmW      = wellness.filter(w => w.id >= sixWeeksAgo && w.totalAZM != null);
+  const weeks     = Math.max(1, windowDays / 7);
+  const weeklyAZM   = azmW.length > 0 ? Math.round(azmW.reduce((s, w) => s + (w.totalAZM   || 0), 0) / weeks) : null;
+  const weeklyZ2    = azmW.length > 0 ? Math.round(azmW.reduce((s, w) => s + (w.fatBurnAZM || 0), 0) / weeks) : null;
+
+  // HRV
+  const latestHRV = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.hrv;
+  const hrvVals   = wellness.filter(w => w.hrv != null && w.id >= sixWeeksAgo).map(w => w.hrv);
+  const avgHRV    = hrvVals.length >= 3 ? (hrvVals.reduce((a,b) => a+b, 0) / hrvVals.length).toFixed(1) : null;
+
+  // Sleep debt
+  const debt = sleepDebt();
+
+  const lines = [
+    'Clarity 6-week summary',
+    fmtDate(sixWeeksAgo) + ' to ' + fmtDate(today),
+    '',
+    'Weight',
+    wtChange !== null
+      ? (firstWt.toFixed(1) + ' kg → ' + lastWt.toFixed(1) + ' kg (' + wtSign + wtChange + ' kg over ' + wtWindow.length + ' readings)')
+      : 'Insufficient weight data',
+    '',
+    'Alcohol compliance',
+    'AF days: ' + afDays + '/' + windowDays + ' (' + afPct + '%)',
+    'Drink sessions: ' + drinkSessions + ' · Avg ' + avgPerSession + ' drinks/session',
+    streak !== null ? ('Current AF streak: ' + streak + ' days') : '',
+    '',
+    'Training',
+    weeklyAZM !== null ? ('Avg weekly AZM: ' + weeklyAZM + ' min') : 'No AZM data',
+    weeklyZ2  !== null ? ('Avg weekly Zone 2: ' + weeklyZ2 + ' min (target: ' + C.zone2Target + ')') : '',
+    '',
+    'Recovery',
+    'Sleep debt: ' + debt.toFixed(1) + ' h',
+    (latestHRV && avgHRV) ? ('HRV: ' + latestHRV.toFixed(1) + ' ms now vs ' + avgHRV + ' ms 6-wk avg') : '',
+  ].filter(l => l !== '').join('\n');
+
+  const done = () => toast('Copied ✓ — paste into Clarity chat');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(lines).then(done).catch(() => fallbackCopy(lines, done));
+  } else {
+    fallbackCopy(lines, done);
+  }
+}
+
+function fallbackCopy(text, cb) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  try { document.execCommand('copy'); cb(); } catch(e) { toast('Copy failed — try long-pressing the button'); }
+  document.body.removeChild(ta);
+}
 
 function saveSettings() {
   const ghVal = document.getElementById('f-gh-secret').value.trim();
