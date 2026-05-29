@@ -896,15 +896,17 @@ async function ghFetch(token, dataType) {
 }
 
 // AZM requires dailyRollUp (POST with date range) — reconcile is not supported for this type
-async function ghFetchAZMRollup(token, startISO) {
+async function ghFetchAZMRollup(token) {
   try {
-    const start = startISO.split('-').map(Number);
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-    const end = toISO(tomorrow).split('-').map(Number);
+    // Current calendar week (Mon to tomorrow) — mirrors Google Health's weekly view
+    const startDate = currentWeekSunday().split('-').map(Number);
+    const tomorrow  = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const endDate   = toISO(tomorrow).split('-').map(Number);
+    // CivilDateTime uses flat fields in JSON (year/month/day at top level, no nested date object)
     const body = {
       range: {
-        start: { date: { year: start[0], month: start[1], day: start[2] } },
-        end:   { date: { year: end[0],   month: end[1],   day: end[2]   } },
+        start: { year: startDate[0], month: startDate[1], day: startDate[2] },
+        end:   { year: endDate[0],   month: endDate[1],   day: endDate[2]   },
       },
       windowSizeDays: 1,
     };
@@ -984,7 +986,7 @@ async function fetchWellness() {
     ghFetch(token, 'daily-heart-rate-variability'),
     ghFetch(token, 'sleep'),
     ghFetch(token, 'vo2-max'),
-    ghFetchAZMRollup(token, cutoff),
+    ghFetchAZMRollup(token),
   ]);
 
   const byDate = {};
@@ -1080,17 +1082,16 @@ function toISO(d)     { return d.toISOString().split('T')[0]; }
 function daysAgo(n)   { const d = new Date(); d.setDate(d.getDate() - n); return d; }
 function daysBetween(a, b) { return Math.floor((b - a) / 86400000); }
 
-// Monday of the current calendar week — matches Google Health's week boundary
-function currentWeekMonday() {
+// Sunday of the current calendar week — matches Google Health's Sun-Sat week
+function currentWeekSunday() {
   const d = new Date(); d.setHours(0, 0, 0, 0);
-  const day = d.getDay();
-  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  d.setDate(d.getDate() - d.getDay()); // getDay() returns 0 for Sun, so Sun subtracts 0
   return toISO(d);
 }
 
 // Weekly AZM totals — calendar week (Mon to now), matching Google Health
 function weeklyAZM() {
-  const monday = currentWeekMonday();
+  const monday = currentWeekSunday();
   const week = wellness.filter(w => w.id >= monday);
   return {
     total:    week.reduce((s, w) => s + (w.totalAZM   || 0), 0),
