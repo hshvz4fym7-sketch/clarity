@@ -895,6 +895,41 @@ async function ghFetch(token, dataType) {
   }
 }
 
+// AZM requires dailyRollUp (POST with date range) — reconcile is not supported for this type
+async function ghFetchAZMRollup(token, startISO) {
+  try {
+    const start = startISO.split('-').map(Number);
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const end = toISO(tomorrow).split('-').map(Number);
+    const body = {
+      range: {
+        start: { date: { year: start[0], month: start[1], day: start[2] }, timeOfDay: { hours: 0 } },
+        end:   { date: { year: end[0],   month: end[1],   day: end[2]   }, timeOfDay: { hours: 0 } },
+      },
+      windowSizeDays: 1,
+    };
+    const r = await fetch(
+      'https://health.googleapis.com/v4/users/me/dataTypes/active-zone-minutes/dataPoints:dailyRollUp',
+      { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+    );
+    if (!r.ok) {
+      const errBody = await r.text();
+      ghLastStatus['active-zone-minutes'] = `${r.status}: ${errBody.slice(0, 120)}`;
+      console.warn('[clarity] AZM rollup error:', errBody);
+      return [];
+    }
+    const d = await r.json();
+    const pts = d.rollupDataPoints || [];
+    ghLastStatus['active-zone-minutes'] = `OK (rollup) — ${pts.length} days`;
+    if (pts[0]) console.log('[clarity] AZM rollup sample:', JSON.stringify(pts[0]));
+    return pts;
+  } catch(e) {
+    ghLastStatus['active-zone-minutes'] = `Error: ${e.message}`;
+    console.warn('[clarity] AZM rollup fetch error:', e.message);
+    return [];
+  }
+}
+
 function showGHStatus() {
   const lines = Object.entries(ghLastStatus).map(([k,v]) => `${k}: ${v}`).join('\n');
   alert(lines || 'No API calls made yet — is Google Health connected?');
@@ -943,13 +978,13 @@ async function fetchWellness() {
 
   const cutoff = toISO(daysAgo(90));
 
-  const [weightPts, fatPts, hrvPts, sleepPts, azmPts, vo2Pts] = await Promise.all([
+  const [weightPts, fatPts, hrvPts, sleepPts, vo2Pts, azmRollup] = await Promise.all([
     ghFetch(token, 'weight'),
     ghFetch(token, 'body-fat'),
     ghFetch(token, 'daily-heart-rate-variability'),
     ghFetch(token, 'sleep'),
-    ghFetch(token, 'active-zone-minutes'),
     ghFetch(token, 'vo2-max'),
+    ghFetchAZMRollup(token, cutoff),
   ]);
 
   const byDate = {};
@@ -1011,27 +1046,21 @@ async function fetchWellness() {
     }
   }
 
-  // Active zone minutes: each point = 1 min in a HR zone, aggregate by day
-  // Zones: FAT_BURN (1 AZM) | CARDIO (2 AZM) | PEAK (2 AZM)
-  for (const pt of azmPts) {
-    const data = pt.activeZoneMinutes;
-    // Some points use civilStartTime, others only have a UTC startTime string
-    let d = civilDateToISO(data?.interval?.civilStartTime?.date);
-    if (!d && data?.interval?.startTime) {
-      // Parse UTC timestamp into local date — use local midnight to avoid day-boundary drift
-      const ts = new Date(data.interval.startTime);
-      d = toISO(ts); // treats as local date
-    }
+  // Active zone minutes — from dailyRollUp endpoint (the only correct method for AZM).
+  // Response fields are already in weighted AZM units: fat burn 1:1, cardio/peak 2:1.
+  // Store raw display minutes (fatBurnMins, cardioMins, peakMins) separately from totalAZM.
+  for (const pt of azmRollup) {
+    const d = civilDateToISO(pt.civilStartTime?.date);
     if (!d || d < cutoff) continue;
     ensure(d);
-    const mins = parseInt(data?.activeZoneMinutes || 0);
-    const zone = data?.heartRateZone;
-    if (zone === 'FAT_BURN') byDate[d].fatBurnMins = (byDate[d].fatBurnMins || 0) + mins;
-    else if (zone === 'CARDIO') byDate[d].cardioMins = (byDate[d].cardioMins || 0) + mins;
-    else if (zone === 'PEAK')   byDate[d].peakMins   = (byDate[d].peakMins   || 0) + mins;
-    // totalAZM: fat burn = 1 AZM/min, cardio/peak = 2 AZM/min
-    const azmValue = (zone === 'CARDIO' || zone === 'PEAK') ? mins * 2 : mins;
-    byDate[d].totalAZM = (byDate[d].totalAZM || 0) + azmValue;
+    const azm = pt.activeZoneMinutes || {};
+    const fbAZM     = parseInt(azm.sumInFatBurnHeartZone  || '0');
+    const cardioAZM = parseInt(azm.sumInCardioHeartZone   || '0');
+    const peakAZM   = parseInt(azm.sumInPeakHeartZone     || '0');
+    byDate[d].fatBurnMins = fbAZM;                          // fat burn: 1 AZM = 1 min
+    byDate[d].cardioMins  = Math.round(cardioAZM / 2);     // cardio: 1 min = 2 AZM
+    byDate[d].peakMins    = Math.round(peakAZM   / 2);     // peak:   1 min = 2 AZM
+    byDate[d].totalAZM    = fbAZM + cardioAZM + peakAZM;   // pre-weighted sum
   }
 
   // VO2 max: periodic estimate from watch, date via sampleTime.civilTime.date
