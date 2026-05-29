@@ -1053,20 +1053,20 @@ async function fetchWellness() {
   }
 
   // Active zone minutes — from dailyRollUp endpoint (the only correct method for AZM).
-  // Response fields are already in weighted AZM units: fat burn 1:1, cardio/peak 2:1.
-  // Store raw display minutes (fatBurnMins, cardioMins, peakMins) separately from totalAZM.
+  // API returns RAW MINUTES in each zone. AZM weighting: fat burn 1×, cardio 2×, peak 2×.
+  // This matches Google Health's calculation exactly.
   for (const pt of azmRollup) {
     const d = civilDateToISO(pt.civilStartTime?.date);
     if (!d || d < cutoff) continue;
     ensure(d);
     const azm = pt.activeZoneMinutes || {};
-    const fbAZM     = parseInt(azm.sumInFatBurnHeartZone  || '0');
-    const cardioAZM = parseInt(azm.sumInCardioHeartZone   || '0');
-    const peakAZM   = parseInt(azm.sumInPeakHeartZone     || '0');
-    byDate[d].fatBurnMins = fbAZM;                          // fat burn: 1 AZM = 1 min
-    byDate[d].cardioMins  = Math.round(cardioAZM / 2);     // cardio: 1 min = 2 AZM
-    byDate[d].peakMins    = Math.round(peakAZM   / 2);     // peak:   1 min = 2 AZM
-    byDate[d].totalAZM    = fbAZM + cardioAZM + peakAZM;   // pre-weighted sum
+    const fbMins     = parseInt(azm.sumInFatBurnHeartZone  || '0');
+    const cardioMins = parseInt(azm.sumInCardioHeartZone   || '0');
+    const peakMins   = parseInt(azm.sumInPeakHeartZone     || '0');
+    byDate[d].fatBurnMins = fbMins;
+    byDate[d].cardioMins  = cardioMins;
+    byDate[d].peakMins    = peakMins;
+    byDate[d].totalAZM    = fbMins + (cardioMins * 2) + (peakMins * 2);  // weighted AZM
   }
 
   // VO2 max: periodic estimate from watch, date via sampleTime.civilTime.date
