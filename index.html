@@ -898,15 +898,19 @@ async function ghFetch(token, dataType) {
 // AZM requires dailyRollUp (POST with date range) — reconcile is not supported for this type
 async function ghFetchAZMRollup(token) {
   try {
-    // Current calendar week (Mon to tomorrow) — mirrors Google Health's weekly view
+    // Current calendar week (Sun to tomorrow) — mirrors Google Health's Sun-Sat weekly view
     const startDate = currentWeekSunday().split('-').map(Number);
     const tomorrow  = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
     const endDate   = toISO(tomorrow).split('-').map(Number);
-    // CivilDateTime uses flat fields in JSON (year/month/day at top level, no nested date object)
+    // CivilDateTime: nested { date: {year,month,day}, time: {hours,minutes,seconds,nanos} }
+    const civDT = ([y, m, d]) => ({
+      date: { year: y, month: m, day: d },
+      time: { hours: 0, minutes: 0, seconds: 0, nanos: 0 },
+    });
     const body = {
       range: {
-        start: { year: startDate[0], month: startDate[1], day: startDate[2] },
-        end:   { year: endDate[0],   month: endDate[1],   day: endDate[2]   },
+        start: civDT(startDate),
+        end:   civDT(endDate),
       },
       windowSizeDays: 1,
     };
