@@ -1156,15 +1156,16 @@ function linearRegression(pts) {
   return { slope, intercept, r2 };
 }
 
-// 14-day sleep debt (hours) against C.sleepTarget, weighted toward recent nights
-// Weight = 1.0 for yesterday, decaying by 0.85 each night back
+// 14-day sleep debt (hours) against C.sleepTarget, weighted toward recent nights.
+// Nights with no data are skipped — missing data is not treated as zero sleep.
 function sleepDebt() {
   const nights = 14;
   let totalDebt = 0, totalWeight = 0;
   for (let i = 1; i <= nights; i++) {
     const d     = toISO(daysAgo(i));
     const entry = wellness.find(w => w.id === d);
-    const slept = entry?.sleepSecs ? entry.sleepSecs / 3600 : 0;
+    if (!entry?.sleepSecs) continue;            // no data — skip this night
+    const slept = entry.sleepSecs / 3600;
     const w     = Math.pow(0.85, i - 1);
     totalDebt   += w * Math.max(0, C.sleepTarget - slept);
     totalWeight += w;
@@ -1429,7 +1430,7 @@ async function fetchAIInsight(force) {
   const z2mins  = weeklyAZM().fatBurn;
   const zone2Context = `Zone 2 (fat burn) this week: ${z2mins}m / ${C.zone2Target}m target${z2mins >= C.zone2Target ? ' — target met' : ' — ' + (C.zone2Target - z2mins) + 'm short'}`;
 
-  const prompt = `You are a direct, encouraging health coach. I am reducing alcohol to social-only drinking to lose 15+ kg, tracking via Pixel Watch 3. Give me exactly 2-3 sentences. Be specific — use my actual numbers. Note if my projected arrival date has meaningfully shifted and name the factor driving it. No generic advice, no preamble.
+  const prompt = `You are a direct, no-fluff health coach. I am cutting alcohol to social-only to lose 15+ kg, tracking via Pixel Watch 3. Write exactly 2-3 complete sentences. Lead with what matters most today — my current status and the most important thing I should know. Use my actual numbers. Only mention the projected arrival date if it has changed materially from the goal date. No preamble, no generic advice, no sign-off.
 
 Goal: reach ${C.goal} kg (currently ${pace.currentW?.toFixed(1) || '?'} kg)
 ${paceContext}
@@ -1456,7 +1457,7 @@ ${recentD || 'None logged'}`;
       headers: { 'Authorization': `Bearer ${getOAIKey()}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-5.4-mini',
-        max_completion_tokens: 130,
+        max_completion_tokens: 220,
         temperature: 0.7,
         messages: [{ role: 'user', content: prompt }]
       })
