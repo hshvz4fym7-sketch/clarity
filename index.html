@@ -2837,3 +2837,416 @@ function renderInsights() {
         </div>`;
     }
   }
+
+  document.getElementById('insights-body').innerHTML = `
+    ${compoundCard}
+    ${impactCard}
+    ${alcoholCostCard}
+    ${fatLossBlock}
+    ${sleepDebtCard}
+    ${trainingRecovCard}
+    ${startNowCard}
+
+    <div class="insight-card">
+      <div class="insight-title">Weight goal</div>
+      <div id="weight-goal-card"></div>
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Body composition</div>
+      <div id="body-comp-sub" style="font-size:12px;color:var(--subtext);margin:4px 0 12px"></div>
+      <canvas id="body-comp-chart"></canvas>
+    </div>
+
+    ${patternCard}
+
+    <div class="insight-card">
+      <div class="insight-title">This week</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:14px">
+        <div>
+          <div class="insight-stat" style="font-size:28px">${drinkThisWeek}</div>
+          <div class="insight-body">session${drinkThisWeek !== 1 ? 's' : ''}</div>
+        </div>
+        <div>
+          <div class="insight-stat" style="font-size:28px;color:var(--green)">${passes.length}</div>
+          <div class="insight-body">passes</div>
+        </div>
+        <div>
+          <div class="insight-stat" style="font-size:28px;color:${avgThis ? 'var(--primary)' : 'var(--subtext)'}">${avgThis ? avgThis.toFixed(0) : '--'}</div>
+          <div class="insight-body">avg HRV</div>
+        </div>
+      </div>
+      <div class="insight-body" style="margin-top:10px">${wot.streak > 0 ? `🎯 ${wot.streak} consecutive week${wot.streak !== 1 ? 's' : ''} on target (≤2 sessions).` : 'A week on target means 2 or fewer sessions.'}</div>
+      ${weekCompare}
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Financial impact</div>
+      <div class="insight-stat">$${savings()}</div>
+      <div class="insight-body">At your old pace that's <strong>$${annualSave}/year</strong> — every alcohol-free day adds ~$${(C.baseline/7).toFixed(2)}.</div>
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Resting HR trend</div>
+      <div class="chart-subtitle" style="font-size:12px;color:var(--subtext);margin:4px 0 10px">7-day rolling avg &nbsp;·&nbsp; 🔶 = drink session</div>
+      <canvas id="rhr-chart"></canvas>
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-title">Cardiovascular fitness (VO2 max)</div>
+      <div id="vo2-band-label" style="font-size:12px;color:var(--subtext);margin:4px 0 10px"></div>
+      <canvas id="vo2-chart"></canvas>
+    </div>
+  `;
+
+  renderRHRChart();
+  renderVO2Chart();
+  renderWeightGoalCard();
+  renderBodyCompChart();
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function openModal() {
+  document.getElementById('f-date').value  = toISO(new Date());
+  document.getElementById('f-cost').value  = '';
+  document.getElementById('f-notes').value = '';
+  stepN = 2;
+  document.getElementById('step-val').textContent = 2;
+  ctx = 'social';
+  document.querySelectorAll('.pill').forEach(p => p.classList.toggle('on', p.dataset.ctx === 'social'));
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal()    { document.getElementById('modal').classList.remove('open'); }
+function bgClose(e)      { if (e.target === document.getElementById('modal')) closeModal(); }
+function step(d)         { stepN = Math.max(1, Math.min(20, stepN+d)); document.getElementById('step-val').textContent = stepN; }
+function pickCtx(el)     { document.querySelectorAll('.pill').forEach(p => p.classList.remove('on')); el.classList.add('on'); ctx = el.dataset.ctx; }
+
+function saveDrink() {
+  const date = document.getElementById('f-date').value;
+  if (!date) { toast('Pick a date'); return; }
+  const entry = {
+    id:   uid(),
+    date,
+    n:    stepN,
+    ctx,
+    cost: parseFloat(document.getElementById('f-cost').value) || null,
+    note: document.getElementById('f-notes').value.trim(),
+    base: false
+  };
+  drinks.push(entry);
+  drinks.sort((a,b) => b.date.localeCompare(a.date));
+  persist(drinks);
+  closeModal();
+  toast('Session logged ✓');
+  renderHome(); renderLog(); renderInsights();
+}
+
+function del(id) {
+  drinks = drinks.filter(d => d.id !== id);
+  persist(drinks);
+  renderLog(); renderHome(); renderInsights();
+  toast('Removed');
+}
+
+// ── Event Planner ─────────────────────────────────────────────────────────────
+let epHistory = []; // [{role:'user'|'assistant', content:'...'}]
+
+function openEventPlanner() {
+  epHistory = [];
+  const msgEl = document.getElementById('ep-messages');
+  if (msgEl) {
+    msgEl.innerHTML = '<div class="ep-bubble ai">Tell me about an upcoming event where drinking will likely happen — what is it, when is it, and what\'s your goal going in?</div>';
+  }
+  document.getElementById('ep-input').value = '';
+  document.getElementById('event-modal').classList.add('open');
+}
+function closeEventPlanner() { document.getElementById('event-modal').classList.remove('open'); }
+function bgCloseEvent(e) { if (e.target === document.getElementById('event-modal')) closeEventPlanner(); }
+
+async function sendEventMessage() {
+  const input = document.getElementById('ep-input');
+  const text  = input.value.trim();
+  if (!text) return;
+  if (!getOAIKey()) { toast('Add your OpenAI key in Settings first'); return; }
+
+  input.value = '';
+  const msgEl = document.getElementById('ep-messages');
+
+  // Add user bubble
+  msgEl.innerHTML += `<div class="ep-bubble user">${text.replace(/</g,'&lt;')}</div>`;
+  epHistory.push({ role: 'user', content: text });
+
+  // Loading bubble
+  const loadId = 'ep-load-' + Date.now();
+  msgEl.innerHTML += `<div class="ep-bubble ai loading" id="${loadId}">thinking...</div>`;
+  msgEl.scrollTop = msgEl.scrollHeight;
+
+  // Build system context from current state
+  const pace  = projectedPace();
+  const debt  = sleepDebt();
+  const ago   = lastDrinkDays();
+  const base30 = hrvBaseline(30);
+  const latestHRV = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.hrv;
+  const hrvStatus = (latestHRV && base30)
+    ? `HRV today: ${latestHRV.toFixed(1)}ms (${((latestHRV - base30) / base30 * 100).toFixed(0)}% vs 30d baseline of ${base30.toFixed(1)}ms)`
+    : latestHRV ? `HRV today: ${latestHRV.toFixed(1)}ms` : 'HRV: no recent data';
+  const context = `You are a direct, science-based health coach. The user is reducing alcohol to lose 15+ kg. Current status:
+- Goal: reach ${C.goal}kg (currently ${pace.currentW?.toFixed(1) || '?'}kg, ${pace.kgToGo > 0 ? pace.kgToGo + 'kg to go' : 'at goal'})
+- Projected arrival: ${pace.projDate || 'insufficient data'} at ${pace.rate.toFixed(2)}kg/week
+- Streak: ${ago !== null ? ago + ' days AF' : 'unknown'}
+- ${hrvStatus}
+- Sleep debt: ${debt.toFixed(1)}h over 14 nights
+- Weekly Zone 2: ${weeklyAZM().fatBurn}m / ${C.zone2Target}m target
+- Pace drivers: ${pace.factors.map(f => f.label + (f.dir === 1 ? ' (helping)' : f.dir === -1 ? ' (hurting)' : '')).join(', ')}
+
+Give practical, specific game plans. When the user describes an event, structure your advice around: (1) Pre-event prep, (2) On-the-night tactics, (3) Recovery plan, (4) Expected impact on the goal. Keep responses concise — 4-6 sentences max per section. Be honest about trade-offs but don't moralize.`;
+
+  const messages = [
+    { role: 'system', content: context },
+    { role: 'assistant', content: 'Tell me about an upcoming event where drinking will likely happen — what is it, when is it, and what\'s your goal going in?' },
+    ...epHistory
+  ];
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${getOAIKey()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4-mini', max_completion_tokens: 350, temperature: 0.7, messages })
+    });
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content?.trim() || 'Something went wrong — try again.';
+    epHistory.push({ role: 'assistant', content: reply });
+
+    const loadEl = document.getElementById(loadId);
+    if (loadEl) {
+      loadEl.className = 'ep-bubble ai';
+      loadEl.innerHTML = reply.replace(/\n/g, '<br>');
+    }
+  } catch (e) {
+    const loadEl = document.getElementById(loadId);
+    if (loadEl) { loadEl.className = 'ep-bubble ai'; loadEl.textContent = 'Network error — check connection.'; }
+  }
+  msgEl.scrollTop = msgEl.scrollHeight;
+}
+
+// ── Weekly Summary ────────────────────────────────────────────────────────────
+function weekKey() {
+  const d = new Date(); d.setHours(0,0,0,0);
+  const day = d.getDay();
+  const monday = new Date(d); monday.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  return toISO(monday);
+}
+
+async function fetchWeeklySummary(force) {
+  if (!getOAIKey()) return null;
+  const key   = 'clarity_weekly_' + weekKey();
+  if (!force) {
+    const cached = localStorage.getItem(key);
+    if (cached) return cached;
+  }
+
+  // Only generate on Sunday (0) or Monday (1)
+  const today = new Date();
+  if (!force && today.getDay() !== 0 && today.getDay() !== 1) return null;
+
+  const pace   = projectedPace();
+  const debt   = sleepDebt();
+  const ago    = lastDrinkDays();
+  const azm    = weeklyAZM();
+  const base30 = hrvBaseline(30);
+  const latestHRV = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.hrv;
+  const week   = drinks.filter(d => !d.base && d.date >= toISO(daysAgo(7)));
+  const weekKcal = week.reduce((s, d) => s + (d.n || 2) * C.kcalPerDrink, 0);
+
+  const prompt = `Write a 3-sentence weekly summary for this person reducing alcohol to lose weight. Make it honest, direct and specific to their numbers. Start with the biggest win this week, then one thing to watch, then their outlook. No preamble, no headers.
+
+This week: ${week.length} sessions, ${weekKcal} kcal from alcohol, ${azm.total} AZM (${azm.fatBurn}m Zone 2), sleep debt ${debt.toFixed(1)}h
+Current streak: ${ago !== null ? ago + ' days AF' : 'unknown'}
+Goal pace: ${pace.projDate ? pace.projDate + ' at ' + pace.rate.toFixed(2) + 'kg/week' : pace.rate.toFixed(2) + 'kg/week'}
+HRV: ${latestHRV ? latestHRV.toFixed(1) + 'ms (' + (base30 ? ((latestHRV - base30) / base30 * 100).toFixed(0) + '% vs baseline' : 'no baseline yet') + ')' : 'no data'}`;
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${getOAIKey()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4-mini', max_completion_tokens: 120, temperature: 0.6, messages: [{ role: 'user', content: prompt }] })
+    });
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content?.trim() || null;
+    if (text) localStorage.setItem(key, text);
+    return text;
+  } catch { return null; }
+}
+
+async function renderWeeklySummary() {
+  const el = document.getElementById('weekly-summary-card');
+  if (!el) return;
+
+  const today = new Date().getDay();
+  const cached = localStorage.getItem('clarity_weekly_' + weekKey());
+
+  // Show on Sunday/Monday, or if cached
+  if (!cached && today !== 0 && today !== 1) { el.innerHTML = ''; return; }
+  if (!cached && !getOAIKey()) { el.innerHTML = ''; return; }
+
+  if (!cached) {
+    el.innerHTML = `<div class="weekly-card"><div class="weekly-label">Weekly review</div><div class="weekly-body" style="opacity:0.4;font-style:italic">Generating your weekly summary...</div></div>`;
+    const text = await fetchWeeklySummary(false);
+    if (!text) { el.innerHTML = ''; return; }
+  }
+
+  const text = localStorage.getItem('clarity_weekly_' + weekKey());
+  if (!text) { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div class="weekly-card">
+      <div class="weekly-label">Week in review</div>
+      <div class="weekly-body">${text}</div>
+      <div class="weekly-actions">
+        <button class="weekly-btn" onclick="refreshWeeklySummary()">↻ refresh</button>
+        <button class="weekly-btn" onclick="document.getElementById('weekly-summary-card').innerHTML=''">✕</button>
+      </div>
+    </div>`;
+}
+
+async function refreshWeeklySummary() {
+  const el = document.getElementById('weekly-summary-card');
+  if (el) el.innerHTML = `<div class="weekly-card"><div class="weekly-label">Weekly review</div><div class="weekly-body" style="opacity:0.4;font-style:italic">Regenerating...</div></div>`;
+  const text = await fetchWeeklySummary(true);
+  if (text) renderWeeklySummary();
+}
+
+// ── Coaching prompt ───────────────────────────────────────────────────────────
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function openSettings() {
+  const ghEl = document.getElementById('f-gh-secret');
+  if (ghEl) {
+    ghEl.value = getGHSecret() ? '••••••••••••••••' : '';
+    ghEl.placeholder = getGHSecret() ? 'Secret saved — paste to replace' : 'GOCSPX-...';
+  }
+  const connectBtn = document.getElementById('btn-gh-connect');
+  if (connectBtn) connectBtn.textContent = ghConnected() ? '✓ Connected — Reconnect' : 'Connect Google Health';
+
+  const oaiEl = document.getElementById('f-oai-key');
+  if (oaiEl) {
+    oaiEl.value = getOAIKey() ? '••••••••••••••••' : '';
+    oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
+  }
+
+  document.getElementById('settings-modal').classList.add('open');
+}
+function closeSettings()    { document.getElementById('settings-modal').classList.remove('open'); }
+function bgCloseSettings(e) { if (e.target === document.getElementById('settings-modal')) closeSettings(); }
+
+function saveSettings() {
+  const ghVal = document.getElementById('f-gh-secret').value.trim();
+  if (ghVal && !ghVal.startsWith('••')) {
+    setGHSecret(ghVal);
+    toast('Client secret saved ✓');
+  }
+
+  const oaiVal = document.getElementById('f-oai-key').value.trim();
+  if (oaiVal && !oaiVal.startsWith('••')) {
+    if (!oaiVal.startsWith('sk-')) { toast('That doesn\'t look like a valid OpenAI key'); return; }
+    setOAIKey(oaiVal);
+    localStorage.removeItem('clarity_brief_' + toISO(new Date()));
+  }
+
+  closeSettings();
+  if (getOAIKey()) renderBrief(true);
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function goTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('nb-'  + name).classList.add('active');
+  if (name === 'log')      renderLog();
+  if (name === 'insights') renderInsights();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ── Manual sync ───────────────────────────────────────────────────────────────
+let syncing = false;
+async function syncWellness() {
+  if (syncing) return;
+  if (!ghConnected()) { toast('Connect Google Health in Settings first'); return; }
+  syncing = true;
+
+  const btn = document.getElementById('btn-sync');
+  if (btn) {
+    btn.style.transition = 'transform 0s';
+    btn.style.color = 'var(--primary)';
+    // Spin animation
+    let angle = 0;
+    const spin = setInterval(() => {
+      angle += 30;
+      btn.style.transform = `rotate(${angle}deg)`;
+    }, 50);
+    btn._spin = spin;
+  }
+
+  toast('Syncing health data...');
+  wellness = await fetchWellness();
+  renderHome();
+  renderInsights();
+
+  if (btn) {
+    clearInterval(btn._spin);
+    btn.style.transform = 'rotate(0deg)';
+    btn.style.color = 'var(--green)';
+    setTimeout(() => { btn.style.color = 'var(--subtext)'; }, 1500);
+  }
+  toast('Synced ✓');
+  syncing = false;
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+async function boot() {
+  // Handle Google OAuth callback
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('code') && urlParams.get('state') === 'clarity_gh') {
+    history.replaceState({}, '', window.location.pathname);
+    const ok = await exchangeGHCode(urlParams.get('code'));
+    if (ok) toast('Google Health connected ✓');
+    else    toast('Connection failed — check client secret');
+  }
+
+  drinks  = loadDrinks();
+  passes  = loadPasses();
+  renderHome(); renderLog();
+
+  wellness = await fetchWellness();
+  renderHome(); renderInsights();
+
+  if (!getOAIKey()) {
+    openSettings();
+  } else {
+    renderBrief(false);
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').then(reg => {
+    reg.addEventListener('updatefound', () => {
+      const newSW = reg.installing;
+      newSW.addEventListener('statechange', () => {
+        // New SW has taken control — reload to get fresh HTML
+        if (newSW.state === 'activated') location.reload();
+      });
+    });
+  }).catch(() => {});
+}
+
+boot();
+</script>
+</body>
+</html>
