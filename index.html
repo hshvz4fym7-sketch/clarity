@@ -532,6 +532,8 @@
         <div class="savings-icon">💰</div>
       </div>
 
+      <div id="bio-card"></div>
+
       <div class="card">
         <div class="chart-title">HRV Trend</div>
         <div class="chart-subtitle">🟡 = morning after drinking</div>
@@ -758,6 +760,100 @@ const DAY_FACTS = {
   75: 'Ten weeks — blood panels looking significantly better',
   90: 'Three months — life-changing territory',
 };
+
+// ── Metabolic phase content ────────────────────────────────────────────────────
+// Each phase describes what is actively happening biologically at this streak length.
+// Content is mechanism-level, not generic wellness advice.
+const STREAK_BIO = [
+  {
+    from: 1, to: 3,
+    phase: 'Phase 1 — Clearing the system',
+    headline: 'Liver detox underway',
+    detail: [
+      'Acetaldehyde — the toxic alcohol metabolite that clouds sleep and stresses the liver — is being processed out. This usually takes 24-72 hours.',
+      'Cortisol is normalizing. Alcohol chronically elevates cortisol, which directly signals fat storage and suppresses fat oxidation. Lower cortisol is the first metabolic win.',
+      'REM sleep is beginning to recover. Alcohol suppresses deep and REM sleep, which is when growth hormone (GH) peaks — GH is a primary driver of fat mobilization overnight.',
+    ],
+  },
+  {
+    from: 4, to: 7,
+    phase: 'Phase 2 — Switching to fat burn',
+    headline: 'Fat oxidation switching on',
+    detail: [
+      'Your liver is no longer prioritizing ethanol clearance. The fat-burning enzymes (CPT-1) that were suppressed by alcohol are back online — fat mobilization is accelerating.',
+      'Testosterone is recovering. Alcohol suppresses testosterone by up to 23% in regular drinkers. Low testosterone directly impairs fat oxidation and promotes visceral fat accumulation.',
+      'Growth hormone pulses are normalizing. GH peaks during deep sleep and drives overnight fat mobilization — this is one of the strongest fat-loss levers your body has.',
+    ],
+  },
+  {
+    from: 8, to: 14,
+    phase: 'Phase 3 — Metabolic upswing',
+    headline: 'Full fat-burning capacity online',
+    detail: [
+      'Visceral fat — the dangerous fat around your organs — is now in active mobilization. Visceral fat responds faster to alcohol removal than subcutaneous fat. This is where body composition starts shifting even before the scale moves much.',
+      'Insulin sensitivity is improving. Alcohol impairs insulin signaling, which means more glucose gets stored as fat. Better insulin response = more glucose directed to muscle, less stored.',
+      'The HRV improvements you\'re seeing reflect ANS recovery — your autonomic nervous system is regulating fat oxidation signaling more effectively.',
+    ],
+  },
+  {
+    from: 15, to: 30,
+    phase: 'Phase 4 — Hormonal reset',
+    headline: 'Hormonal environment optimized for fat loss',
+    detail: [
+      'Testosterone is approaching your baseline. With full T restored, your muscle tissue has better insulin sensitivity and fat oxidation capacity — the anabolic environment is working for you.',
+      'Leptin sensitivity is recovering. Alcohol disrupts leptin (the satiety hormone), causing false hunger signals. More accurate hunger signaling means you\'re eating closer to your actual energy needs.',
+      'Resting metabolic rate is running roughly 10-15% higher than when you were drinking regularly. Your liver is redirecting energy from ethanol processing back to normal metabolism.',
+    ],
+  },
+  {
+    from: 31, to: 60,
+    phase: 'Phase 5 — Compounding returns',
+    headline: 'Sustained metabolic advantage',
+    detail: [
+      'Any accumulated liver fat (early NAFLD) is in active reversal. Liver fat is highly metabolically active and its removal improves whole-body fat metabolism.',
+      'Sleep quality, GH release and fat oxidation are now self-reinforcing. Better sleep → more GH → more overnight fat burn → better recovery → better sleep. The cycle is working in your favour.',
+      'Cortisol diurnal rhythm is fully normalized. Morning cortisol is higher (energizing), evening cortisol is lower (fat-storing). The timing is what matters — alcohol inverts this pattern.',
+    ],
+  },
+  {
+    from: 61, to: 999,
+    phase: 'Phase 6 — New baseline',
+    headline: 'Fat-adapted and compounding',
+    detail: [
+      'You\'ve established a new hormonal baseline. Testosterone, GH, leptin and cortisol are all running at levels that actively support fat loss rather than fighting it.',
+      'Your liver\'s fat metabolism capacity is at its highest — years of moderate drinking leave a functional residue that fully clears around this point.',
+      'Each alcohol-free week from here continues to compound. The gut microbiome changes from this point on directly improve fat metabolism and reduce systemic inflammation.',
+    ],
+  },
+];
+
+function currentStreakBio() {
+  const days = lastDrinkDays() || 0;
+  return STREAK_BIO.find(b => days >= b.from && days <= b.to) || STREAK_BIO[0];
+}
+
+function streakBioText() {
+  const bio = currentStreakBio();
+  return `${bio.phase}: ${bio.headline}. ${bio.detail.join(' ')}`;
+}
+
+function renderBioCard() {
+  const el = document.getElementById('bio-card');
+  if (!el) return;
+  const days = lastDrinkDays() || 0;
+  if (days < 1) { el.innerHTML = ''; return; }
+  const bio = currentStreakBio();
+  el.innerHTML = `
+    <div style="background:var(--card);border-radius:18px;padding:18px 20px;border:1px solid var(--border);margin-bottom:0">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--primary);margin-bottom:6px">${bio.phase}</div>
+      <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:12px">${bio.headline}</div>
+      ${bio.detail.map(d => `
+        <div style="display:flex;gap:10px;margin-bottom:9px;align-items:flex-start">
+          <div style="width:5px;height:5px;border-radius:50%;background:var(--primary);margin-top:7px;flex-shrink:0"></div>
+          <div style="font-size:13px;color:var(--subtext);line-height:1.55">${d}</div>
+        </div>`).join('')}
+    </div>`;
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let wellness = [];
@@ -1450,6 +1546,8 @@ ${sleepDebtContext}
 Weekly AZM: ${weeklyAZM().total} / ${C.azmTarget} · ${zone2Context}
 ${hrvBaselineContext ? hrvBaselineContext + '\n' : ''}VO2 max: ${latestVO2() ? latestVO2().toFixed(1) + ' ml/kg/min' : 'no data yet'}
 ${trainingContext ? trainingContext + '\n' : ''}
+Current metabolic phase: ${streakBioText()}
+
 Recent drink log:
 ${recentD || 'None logged'}`;
 
@@ -1675,6 +1773,7 @@ function renderHome() {
   document.getElementById('savings').textContent = '$' + savings();
 
   renderMilestone();
+  renderBioCard();
   renderWeeklySummary();
 
   // Weeks on target + passes
