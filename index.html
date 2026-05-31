@@ -1053,20 +1053,20 @@ async function fetchWellness() {
   }
 
   // Active zone minutes — from dailyRollUp endpoint (the only correct method for AZM).
-  // API returns RAW MINUTES in each zone. AZM weighting: fat burn 1×, cardio 2×, peak 2×.
-  // This matches Google Health's calculation exactly.
+  // API already returns pre-weighted AZM values: fat burn 1:1 (= actual mins), cardio/peak 2:1.
+  // Do NOT apply additional weighting — just sum the values directly.
   for (const pt of azmRollup) {
     const d = civilDateToISO(pt.civilStartTime?.date);
     if (!d || d < cutoff) continue;
     ensure(d);
     const azm = pt.activeZoneMinutes || {};
-    const fbMins     = parseInt(azm.sumInFatBurnHeartZone  || '0');
-    const cardioMins = parseInt(azm.sumInCardioHeartZone   || '0');
-    const peakMins   = parseInt(azm.sumInPeakHeartZone     || '0');
-    byDate[d].fatBurnMins = fbMins;
-    byDate[d].cardioMins  = cardioMins;
-    byDate[d].peakMins    = peakMins;
-    byDate[d].totalAZM    = fbMins + (cardioMins * 2) + (peakMins * 2);  // weighted AZM
+    const fbAZM     = parseInt(azm.sumInFatBurnHeartZone  || '0');
+    const cardioAZM = parseInt(azm.sumInCardioHeartZone   || '0');
+    const peakAZM   = parseInt(azm.sumInPeakHeartZone     || '0');
+    byDate[d].fatBurnMins = fbAZM;                        // fat burn AZM = actual mins (1:1)
+    byDate[d].cardioMins  = Math.round(cardioAZM / 2);   // actual cardio mins = AZM / 2
+    byDate[d].peakMins    = Math.round(peakAZM   / 2);   // actual peak mins = AZM / 2
+    byDate[d].totalAZM    = fbAZM + cardioAZM + peakAZM; // pre-weighted sum, no extra multiplier
   }
 
   // VO2 max: periodic estimate from watch, date via sampleTime.civilTime.date
@@ -1160,21 +1160,19 @@ function linearRegression(pts) {
   return { slope, intercept, r2 };
 }
 
-// 14-day sleep debt (hours) against C.sleepTarget, weighted toward recent nights.
-// Nights with no data are skipped — missing data is not treated as zero sleep.
+// 14-day cumulative sleep debt (hours) against C.sleepTarget.
+// Simple sum of nightly deficits — nights with no data are skipped.
+// Avoids extrapolation artifacts where one bad night inflates the total.
 function sleepDebt() {
-  const nights = 14;
-  let totalDebt = 0, totalWeight = 0;
-  for (let i = 1; i <= nights; i++) {
+  let totalDebt = 0;
+  for (let i = 1; i <= 14; i++) {
     const d     = toISO(daysAgo(i));
     const entry = wellness.find(w => w.id === d);
-    if (!entry?.sleepSecs) continue;            // no data — skip this night
+    if (!entry?.sleepSecs) continue;
     const slept = entry.sleepSecs / 3600;
-    const w     = Math.pow(0.85, i - 1);
-    totalDebt   += w * Math.max(0, C.sleepTarget - slept);
-    totalWeight += w;
+    totalDebt += Math.max(0, C.sleepTarget - slept);
   }
-  return totalWeight > 0 ? totalDebt / totalWeight * nights : 0;
+  return totalDebt;
 }
 
 // Weight regression on last N days — returns { slope (kg/day), daysToGoal, r2, projDate }
