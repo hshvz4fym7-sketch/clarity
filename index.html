@@ -1082,14 +1082,18 @@ async function fetchWellness() {
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
-function toISO(d)     { return d.toISOString().split('T')[0]; }
+// Always use LOCAL date components — toISOString() returns UTC which is wrong for UTC+10 (AEST).
+// At midnight AEST, UTC is still the previous day, so UTC-based dates are consistently 1 day behind.
+function toISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
 function daysAgo(n)   { const d = new Date(); d.setDate(d.getDate() - n); return d; }
 function daysBetween(a, b) { return Math.floor((b - a) / 86400000); }
 
 // Sunday of the current calendar week — matches Google Health's Sun-Sat week
 function currentWeekSunday() {
-  const d = new Date(); d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - d.getDay()); // getDay() returns 0 for Sun, so Sun subtracts 0
+  const d = new Date();
+  d.setDate(d.getDate() - d.getDay()); // getDay() 0=Sun, so Sun subtracts 0
   return toISO(d);
 }
 
