@@ -827,7 +827,39 @@ const STREAK_BIO = [
   },
 ];
 
+// Post-drink recovery card — shown when streak is 0-3 days AND a drink has been logged.
+// Tone is biological context + rebuild framing, not shame or "back to zero".
+const POST_DRINK_BIO = {
+  phase: 'Recovery reset',
+  headline: 'Back in fat-burning mode within 48h',
+  detail: [
+    'Acetaldehyde — the toxic alcohol metabolite — clears within 24-48h. The HRV dip today is expected, normal, and a sign your body is processing correctly. It will bounce back within 1-2 days.',
+    'One social occasion does not undo your streak\'s metabolic gains. The testosterone recovery, restored GH pulses and fat-oxidation enzymes you built during your streak are still there — they resume as soon as ethanol is cleared from your system.',
+    'Your liver prioritizes ethanol processing for 12-24h, which briefly pauses fat oxidation. This is a short pause, not a reset. Full fat-burning capacity is restored before tomorrow night — and the next streak compounds from a higher base than the last one.',
+  ],
+};
+
+// True when the user has had a real drink AND is within 3 days of it — i.e., they're in recovery
+// from a social occasion, not in their opening days of the whole program.
+function isPostDrinkReset() {
+  const realDrinks = drinks.filter(d => !d.base);
+  if (!realDrinks.length) return false;
+  const days = lastDrinkDays();
+  return days !== null && days <= 3;
+}
+
+// Overall compliance since program start — % of days with no alcohol logged
+function overallCompliance() {
+  const start   = new Date(C.start + 'T00:00:00');
+  const today   = new Date(); today.setHours(0, 0, 0, 0);
+  const total   = daysBetween(start, today) + 1;
+  if (total <= 0) return 100;
+  const drinkDays = new Set(drinks.filter(d => !d.base).map(d => d.date)).size;
+  return Math.round(((total - drinkDays) / total) * 100);
+}
+
 function currentStreakBio() {
+  if (isPostDrinkReset()) return POST_DRINK_BIO;
   const days = lastDrinkDays() || 0;
   return STREAK_BIO.find(b => days >= b.from && days <= b.to) || STREAK_BIO[0];
 }
@@ -840,16 +872,20 @@ function streakBioText() {
 function renderBioCard() {
   const el = document.getElementById('bio-card');
   if (!el) return;
-  const days = lastDrinkDays() || 0;
-  if (days < 1) { el.innerHTML = ''; return; }
+  const days = lastDrinkDays();
+  // Show the card any time there's a meaningful streak OR right after a drink
+  if (days === null) { el.innerHTML = ''; return; }
   const bio = currentStreakBio();
+  const isRecovery = isPostDrinkReset();
+  // Recovery card uses a warmer amber accent; progress card uses primary blue
+  const accentColor = isRecovery ? '#D97706' : 'var(--primary)';
   el.innerHTML = `
-    <div style="background:var(--card);border-radius:18px;padding:18px 20px;border:1px solid var(--border);margin-bottom:0">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--primary);margin-bottom:6px">${bio.phase}</div>
+    <div style="background:var(--card);border-radius:18px;padding:18px 20px;border:1px solid ${isRecovery ? 'rgba(217,119,6,0.2)' : 'var(--border)'};margin-bottom:0">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${accentColor};margin-bottom:6px">${bio.phase}</div>
       <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:12px">${bio.headline}</div>
       ${bio.detail.map(d => `
         <div style="display:flex;gap:10px;margin-bottom:9px;align-items:flex-start">
-          <div style="width:5px;height:5px;border-radius:50%;background:var(--primary);margin-top:7px;flex-shrink:0"></div>
+          <div style="width:5px;height:5px;border-radius:50%;background:${accentColor};margin-top:7px;flex-shrink:0"></div>
           <div style="font-size:13px;color:var(--subtext);line-height:1.55">${d}</div>
         </div>`).join('')}
     </div>`;
@@ -1547,7 +1583,7 @@ Weekly AZM: ${weeklyAZM().total} / ${C.azmTarget} · ${zone2Context}
 ${hrvBaselineContext ? hrvBaselineContext + '\n' : ''}VO2 max: ${latestVO2() ? latestVO2().toFixed(1) + ' ml/kg/min' : 'no data yet'}
 ${trainingContext ? trainingContext + '\n' : ''}
 Current metabolic phase: ${streakBioText()}
-
+${isPostDrinkReset() ? `\nCoaching note: User had a social drink ${lastDrinkDays()} day(s) ago. This was a mindful choice, not a failure. Frame today as recovery — acknowledge the brief metabolic pause, reference the rebuild, and avoid any shame or "back to zero" framing. The ${overallCompliance()}% overall compliance since program start is the real metric.` : ''}
 Recent drink log:
 ${recentD || 'None logged'}`;
 
@@ -1783,6 +1819,7 @@ function renderHome() {
     const parts = [];
     if (wot.streak > 0) parts.push(`🎯 ${wot.streak} week${wot.streak !== 1 ? 's' : ''} on target`);
     if (passes.length > 0) parts.push(`✓ ${passes.length} pass${passes.length !== 1 ? 'es' : ''} logged`);
+    parts.push(`${overallCompliance()}% alcohol-free since ${new Date(C.start + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`);
     targetEl.textContent = parts.join('  ·  ');
   }
 
@@ -3100,7 +3137,9 @@ function saveDrink() {
   drinks.sort((a,b) => b.date.localeCompare(a.date));
   persist(drinks);
   closeModal();
-  toast('Session logged ✓');
+  // Supportive toast — contextualise, don't shame
+  const comp = overallCompliance();
+  toast(`Logged. ${comp}% alcohol-free overall — back in fat-burning mode within 48h.`);
   renderHome(); renderLog(); renderInsights();
 }
 
