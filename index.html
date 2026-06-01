@@ -1222,6 +1222,11 @@ function toISO(d) {
 function daysAgo(n)   { const d = new Date(); d.setDate(d.getDate() - n); return d; }
 function daysBetween(a, b) { return Math.floor((b - a) / 86400000); }
 
+// Days elapsed in the current Sun-Sat week, including today (1 = Sunday, 7 = Saturday)
+function daysElapsedInWeek() {
+  return new Date().getDay() + 1; // getDay() 0=Sun → 1 day elapsed; 6=Sat → 7 days elapsed
+}
+
 // Sunday of the current calendar week — matches Google Health's Sun-Sat week
 function currentWeekSunday() {
   const d = new Date();
@@ -1664,8 +1669,9 @@ function renderHome() {
     document.getElementById('hero-day').textContent = '1';
     document.getElementById('hero-sub').textContent = 'Last drink was last night — first clean morning';
   } else {
-    document.getElementById('hero-day').textContent = ago;
-    document.getElementById('hero-sub').textContent = `${ago} alcohol-free morning${ago > 1 ? 's' : ''} and counting`;
+    const displayDays = ago - 1;
+    document.getElementById('hero-day').textContent = displayDays;
+    document.getElementById('hero-sub').textContent = `${displayDays} alcohol-free day${displayDays !== 1 ? 's' : ''} and counting`;
   }
 
   // HRV — show value + % vs 30-day personal baseline
@@ -1755,17 +1761,34 @@ function renderHome() {
   if (azmEl) {
     const azm = weeklyAZM();
     if (azm.total > 0) {
+      // Pace-aware coloring: compare actual vs pro-rata for days elapsed this week
+      const elapsed   = daysElapsedInWeek();
+      const daysLeft  = 7 - elapsed;
+      const proRataAZM = Math.round(azm.target * elapsed / 7);
+      const proRataZ2  = Math.round(C.zone2Target * elapsed / 7);
+
       const pct = Math.min(100, Math.round((azm.total / azm.target) * 100));
-      const barCol = azm.total >= azm.target ? 'var(--green)' : 'var(--primary)';
+      const azmDone    = azm.total >= azm.target;
+      const azmOnPace  = azm.total >= proRataAZM;
+      const azmBehind  = !azmOnPace && azm.total < proRataAZM * 0.7;
+      const barCol = azmDone ? 'var(--green)' : azmOnPace ? 'var(--primary)' : azmBehind ? '#EF4444' : 'var(--amber)';
+
       const totalActive = azm.fatBurn + azm.cardio + azm.peak;
       const fatPct = totalActive > 0 ? Math.round((azm.fatBurn / totalActive) * 100) : 0;
-      const metLabel = azm.total >= azm.target
+      const metLabel = azmDone
         ? `<span style="color:var(--green);font-weight:700">✓ target met</span>`
-        : `<span style="color:var(--subtext)">${azm.target - azm.total} to go</span>`;
+        : azmOnPace
+        ? `<span style="color:var(--primary);font-weight:600">on pace · ${azm.target - azm.total} to go</span>`
+        : `<span style="color:var(--subtext)">${azm.target - azm.total} to go · ${daysLeft}d left</span>`;
+
       const z2Pct  = Math.min(100, Math.round((azm.fatBurn / C.zone2Target) * 100));
-      const z2Col  = azm.fatBurn >= C.zone2Target ? 'var(--green)' : 'var(--primary)';
-      const z2Label = azm.fatBurn >= C.zone2Target
+      const z2Done    = azm.fatBurn >= C.zone2Target;
+      const z2OnPace  = azm.fatBurn >= proRataZ2;
+      const z2Col  = z2Done ? 'var(--green)' : z2OnPace ? 'var(--primary)' : 'var(--amber)';
+      const z2Label = z2Done
         ? `<span style="color:var(--green);font-weight:600">✓ Zone 2 done</span>`
+        : z2OnPace
+        ? `<span style="color:var(--primary);font-weight:600">on pace</span>`
         : `<span style="color:var(--subtext)">${C.zone2Target - azm.fatBurn}m Zone 2 left</span>`;
       const zones = [
         azm.fatBurn ? `<span style="color:#10B981;font-size:11px;font-weight:600">${azm.fatBurn}m Zone 2</span>` : '',
@@ -2158,15 +2181,19 @@ function projectedPace() {
     factors.push({ label: `${weeklyDrinks} sessions this week`, dir: -1 });
   }
 
-  // Active zone minutes: cardio deficit + fat metabolism improvement
+  // Active zone minutes — pace-adjusted vs pro-rata for days elapsed this week
+  const proRataAZM = Math.round(C.azmTarget * daysElapsedInWeek() / 7);
   if (azm.total >= C.azmTarget) {
     rate += 0.15;
     factors.push({ label: `${azm.total} AZM — target hit`, dir: 1 });
-  } else if (azm.total >= C.azmTarget / 2) {
+  } else if (azm.total >= proRataAZM) {
     rate += 0.05;
+    factors.push({ label: `${azm.total} AZM — on pace`, dir: 0 });
+  } else if (azm.total >= proRataAZM * 0.5 || daysElapsedInWeek() <= 2) {
+    // Early in week or only slightly behind — neutral, not penalised
     factors.push({ label: `${azm.total} / ${C.azmTarget} AZM`, dir: 0 });
   } else if (azm.total > 0) {
-    factors.push({ label: `${azm.total} / ${C.azmTarget} AZM — low`, dir: -1 });
+    factors.push({ label: `${azm.total} / ${C.azmTarget} AZM — behind pace`, dir: -1 });
   }
 
   // Sleep debt: cortisol suppresses fat burning, increases fat storage
@@ -2803,11 +2830,14 @@ function renderInsights() {
   const totalActive  = azm.fatBurn + azm.cardio + azm.peak;
   const fatBurnPct   = totalActive > 0 ? Math.round((azm.fatBurn / totalActive) * 100) : null;
 
-  // Conditions score 0-4: AZM target met, Zone 2 target met, >50% Zone 2, <2 drink sessions
+  // Conditions score 0-4 — pace-adjusted so early-week progress isn't penalised
   const zone2ThisWeek = azm.fatBurn || 0;
+  const elapsed       = daysElapsedInWeek();
+  const proRataAZMI   = Math.round(azm.target * elapsed / 7);
+  const proRataZ2I    = Math.round(C.zone2Target * elapsed / 7);
   let condScore = 0;
-  if (azm.total >= azm.target) condScore++;
-  if (zone2ThisWeek >= C.zone2Target) condScore++;
+  if (azm.total >= azm.target || azm.total >= proRataAZMI) condScore++;   // on pace counts
+  if (zone2ThisWeek >= C.zone2Target || zone2ThisWeek >= proRataZ2I) condScore++;
   if (fatBurnPct != null && fatBurnPct >= 50) condScore++;
   if (drinkThisWeek <= 1) condScore++;
   const condLabel = condScore >= 3 ? 'Optimal' : condScore === 2 ? 'Good' : condScore === 1 ? 'Mixed' : 'Challenging';
@@ -2826,11 +2856,11 @@ function renderInsights() {
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
           <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
-            <div style="font-size:20px;font-weight:800;color:${azm.total >= azm.target ? 'var(--green)' : 'var(--text)'}">${azm.total}</div>
+            <div style="font-size:20px;font-weight:800;color:${azm.total >= azm.target ? 'var(--green)' : azm.total >= proRataAZMI ? 'var(--primary)' : 'var(--text)'}">${azm.total}</div>
             <div style="font-size:10px;color:var(--subtext);margin-top:2px">AZM / ${azm.target}</div>
           </div>
           <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
-            <div style="font-size:20px;font-weight:800;color:${zone2ThisWeek >= C.zone2Target ? 'var(--green)' : 'var(--amber)'}">${zone2ThisWeek}<span style="font-size:12px;font-weight:500;color:var(--subtext)">m</span></div>
+            <div style="font-size:20px;font-weight:800;color:${zone2ThisWeek >= C.zone2Target ? 'var(--green)' : zone2ThisWeek >= proRataZ2I ? 'var(--primary)' : 'var(--amber)'}">${zone2ThisWeek}<span style="font-size:12px;font-weight:500;color:var(--subtext)">m</span></div>
             <div style="font-size:10px;color:var(--subtext);margin-top:2px">Zone 2 / ${C.zone2Target}m target</div>
           </div>
           <div style="text-align:center;padding:10px;background:var(--bg);border-radius:12px">
