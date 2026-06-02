@@ -1573,7 +1573,7 @@ async function fetchAIInsight(force) {
 
 Goal: reach ${C.goal} kg (currently ${pace.currentW?.toFixed(1) || '?'} kg)
 ${paceContext}
-Days since last drink: ${ago === null ? 'unknown' : ago}
+Completed alcohol-free days: ${ago === null ? 'unknown' : ago - 1}
 Approach start: ${C.start}
 
 Last 7 days wellness:
@@ -2263,7 +2263,7 @@ function renderWeightGoalCard() {
     const afBonusPerDay    = 0.20 / 7;
     const daysGainedPerAFDay = (afBonusPerDay / (pace.rate / 7)).toFixed(1);
     const streakAgo        = lastDrinkDays();
-    const streakDays       = streakAgo !== null ? streakAgo : 0;
+    const streakDays       = streakAgo !== null ? streakAgo - 1 : 0;
     const streakSaved      = (streakDays * parseFloat(daysGainedPerAFDay)).toFixed(0);
     const streakLine       = streakDays > 1
       ? '<br><span style="color:var(--subtext)">' + streakDays + '-day streak = goal shifted ~' + streakSaved + ' days forward.</span>'
@@ -3225,7 +3225,7 @@ async function sendEventMessage() {
   const context = `You are a direct, science-based health coach. The user is reducing alcohol to lose 15+ kg. Current status:
 - Goal: reach ${C.goal}kg (currently ${pace.currentW?.toFixed(1) || '?'}kg, ${pace.kgToGo > 0 ? pace.kgToGo + 'kg to go' : 'at goal'})
 - Projected arrival: ${pace.projDate || 'insufficient data'} at ${pace.rate.toFixed(2)}kg/week
-- Streak: ${ago !== null ? ago + ' days AF' : 'unknown'}
+- Completed AF days: ${ago !== null ? ago - 1 : 'unknown'}
 - ${hrvStatus}
 - Sleep debt: ${debt.toFixed(1)}h over 14 nights
 - Weekly Zone 2: ${weeklyAZM().fatBurn}m / ${C.zone2Target}m target
@@ -3293,7 +3293,7 @@ async function fetchWeeklySummary(force) {
   const prompt = `Write a 3-sentence weekly summary for this person reducing alcohol to lose weight. Make it honest, direct and specific to their numbers. Start with the biggest win this week, then one thing to watch, then their outlook. No preamble, no headers.
 
 This week: ${week.length} sessions, ${weekKcal} kcal from alcohol, ${azm.total} AZM (${azm.fatBurn}m Zone 2), sleep debt ${debt.toFixed(1)}h
-Current streak: ${ago !== null ? ago + ' days AF' : 'unknown'}
+Completed AF days: ${ago !== null ? ago - 1 : 'unknown'}
 Goal pace: ${pace.projDate ? pace.projDate + ' at ' + pace.rate.toFixed(2) + 'kg/week' : pace.rate.toFixed(2) + 'kg/week'}
 HRV: ${latestHRV ? latestHRV.toFixed(1) + 'ms (' + (base30 ? ((latestHRV - base30) / base30 * 100).toFixed(0) + '% vs baseline' : 'no baseline yet') + ')' : 'no data'}`;
 
@@ -3421,7 +3421,7 @@ function copy6WeekSummary() {
     'Alcohol compliance',
     'AF days: ' + afDays + '/' + windowDays + ' (' + afPct + '%)',
     'Drink sessions: ' + drinkSessions + ' · Avg ' + avgPerSession + ' drinks/session',
-    streak !== null ? ('Current AF streak: ' + streak + ' days') : '',
+    streak !== null ? ('Completed AF days: ' + (streak - 1)) : '',
     '',
     'Training',
     weeklyAZM !== null ? ('Avg weekly AZM: ' + weeklyAZM + ' min') : 'No AZM data',
