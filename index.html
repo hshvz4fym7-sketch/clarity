@@ -135,15 +135,12 @@
       padding: 16px;
       box-shadow: 0 1px 4px rgba(0,0,0,0.06);
     }
-    .metric-value  { font-size: 30px; font-weight: 700; letter-spacing: -0.5px; }
+    .metric-value  { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
     .metric-label  { font-size: 11px; color: var(--subtext); margin-top: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
     .metric-delta  { font-size: 12px; margin-top: 5px; font-weight: 600; }
     .up   { color: var(--green); }
     .down { color: var(--red); }
     .neu  { color: var(--subtext); }
-
-    /* ── Metric card smaller text for 3-col ── */
-    .metric-value  { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
 
     /* ── Savings ── */
     .savings-card {
@@ -650,6 +647,7 @@
 
     <button class="btn-primary" onclick="saveSettings()">Save</button>
     <button onclick="showGHStatus()" style="display:block;width:100%;margin-top:10px;padding:12px;background:none;border:1.5px solid var(--border);border-radius:10px;color:var(--subtext);font-size:14px;cursor:pointer">Show API status</button>
+    <div id="sync-status-line" style="font-size:12px;color:var(--subtext);text-align:center;margin-top:8px"></div>
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext);margin-bottom:10px">Progress check-in</div>
       <button onclick="copy6WeekSummary()" style="display:block;width:100%;padding:14px;background:var(--primary-light);border:none;border-radius:12px;color:var(--primary);font-size:15px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent">📋 Copy 6-week summary</button>
@@ -860,7 +858,7 @@ function overallCompliance() {
 
 function currentStreakBio() {
   if (isPostDrinkReset()) return POST_DRINK_BIO;
-  const days = lastDrinkDays() || 0;
+  const days = afDays() || 0;
   return STREAK_BIO.find(b => days >= b.from && days <= b.to) || STREAK_BIO[0];
 }
 
@@ -916,6 +914,31 @@ function loadDrinks() {
 }
 function persist(d) { localStorage.setItem('clarity_v2', JSON.stringify(d)); }
 function uid()       { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+// ── Wellness cache ─────────────────────────────────────────────────────────────
+// Synced health data is persisted on-device so the app renders instantly on
+// open and keeps working offline. A failed or empty sync never wipes the last
+// good data.
+function loadWellnessCache() {
+  try {
+    const s = localStorage.getItem('clarity_wellness_cache');
+    return s ? JSON.parse(s) : null; // { ts, data }
+  } catch { return null; }
+}
+function saveWellnessCache(data) {
+  try { localStorage.setItem('clarity_wellness_cache', JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+function lastSyncTs() { return loadWellnessCache()?.ts || null; }
+function lastSyncLabel() {
+  const ts = lastSyncTs();
+  if (!ts) return 'Never synced';
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1)  return 'Synced just now';
+  if (mins < 60) return `Synced ${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24)  return `Synced ${hrs}h ago`;
+  return `Synced ${Math.round(hrs / 24)}d ago`;
+}
 
 function loadPasses() {
   const s = localStorage.getItem('clarity_passes');
@@ -989,10 +1012,16 @@ async function refreshGHToken() {
   } catch { return false; }
 }
 
+let _ghExpiredWarned = false;
 async function getValidGHToken() {
   if (!ghConnected()) return null;
   if (getGHToken() && Date.now() < getGHExpiry()) return getGHToken();
-  return (await refreshGHToken()) ? getGHToken() : null;
+  if (await refreshGHToken()) return getGHToken();
+  if (getGHRefresh() && !_ghExpiredWarned) {
+    _ghExpiredWarned = true;
+    toast('Google Health session expired — reconnect in Settings');
+  }
+  return null;
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -1234,10 +1263,10 @@ function currentWeekSunday() {
   return toISO(d);
 }
 
-// Weekly AZM totals — calendar week (Mon to now), matching Google Health
+// Weekly AZM totals — current Sun-Sat calendar week, matching Google Health
 function weeklyAZM() {
-  const monday = currentWeekSunday();
-  const week = wellness.filter(w => w.id >= monday);
+  const sunday = currentWeekSunday();
+  const week = wellness.filter(w => w.id >= sunday);
   return {
     total:    week.reduce((s, w) => s + (w.totalAZM   || 0), 0),
     fatBurn:  week.reduce((s, w) => s + (w.fatBurnMins || 0), 0),
@@ -1357,6 +1386,11 @@ function fmtDate(iso) {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
+// Escape text before inserting into innerHTML (user input and AI output)
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function savings() {
   const start   = new Date(C.start + 'T00:00:00');
   const today   = new Date(); today.setHours(0,0,0,0);
@@ -1378,6 +1412,37 @@ function lastDrinkDays() {
   const last  = new Date(sorted[0].date + 'T00:00:00');
   const today = new Date(); today.setHours(0,0,0,0);
   return daysBetween(last, today);
+}
+
+// SINGLE SOURCE OF TRUTH for the streak shown anywhere in the app.
+// "Completed alcohol-free days" = full days with no alcohol. A drink last
+// night (lastDrinkDays = 1) means 0 completed AF days — the count starts
+// after the first clean morning. Hero, milestones, phase content, day facts
+// and every AI prompt must all use this number so they never disagree.
+function afDays() {
+  const ago = lastDrinkDays();
+  if (ago === null) return null;
+  return Math.max(0, ago - 1);
+}
+
+// Drinks in the current Sun-Sat calendar week (matches Google Health's week)
+function drinksThisCalWeek() {
+  const ws = currentWeekSunday();
+  return drinks.filter(d => !d.base && d.date >= ws);
+}
+
+// Drinks in the trailing 7 days — physiological recency, used by the pace model
+function drinksInLast7Days() {
+  const cut = toISO(daysAgo(7));
+  return drinks.filter(d => !d.base && d.date >= cut);
+}
+
+// Previous completed Sun-Sat week range [startISO, endISO] — for the weekly review
+function prevWeekRange() {
+  const sun = new Date(currentWeekSunday() + 'T00:00:00');
+  const end = new Date(sun); end.setDate(end.getDate() - 1);   // last Saturday
+  const start = new Date(sun); start.setDate(start.getDate() - 7); // previous Sunday
+  return [toISO(start), toISO(end)];
 }
 
 // ── Weeks on target (≤2 drink sessions per week) ──────────────────────────────
@@ -1443,7 +1508,8 @@ function weeklyDrinkPattern() {
 
 // ── Milestones ────────────────────────────────────────────────────────────────
 function renderMilestone() {
-  const ago = lastDrinkDays() || 0;
+  // Uses the same completed-AF-day count the hero displays — never disagrees with it
+  const ago = afDays() || 0;
   const next = MILESTONES.find(m => m.days > ago);
   const el   = document.getElementById('milestone-row');
   if (!el) return;
@@ -1467,10 +1533,32 @@ function renderMilestone() {
 }
 
 // ── AI Brief ──────────────────────────────────────────────────────────────────
+// Cache key includes a fingerprint of the data the brief is written from.
+// Logging a drink or syncing new health data changes the fingerprint, which
+// regenerates the brief — so it can never contradict the cards on screen.
+function briefDataFingerprint() {
+  const latestW   = [...wellness].filter(w => w.weight != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+  const latestHRV = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0];
+  const raw = [
+    afDays(), drinks.length, passes.length,
+    latestW ? latestW.weight.toFixed(1) : '',
+    latestHRV ? latestHRV.hrv.toFixed(0) : '',
+    weeklyAZM().total, sleepDebt().toFixed(0),
+  ].join('|');
+  let h = 0;
+  for (let i = 0; i < raw.length; i++) { h = ((h << 5) - h + raw.charCodeAt(i)) | 0; }
+  return Math.abs(h).toString(36);
+}
+
 async function fetchAIInsight(force) {
   if (!getOAIKey()) return null;
   const today    = toISO(new Date());
-  const cacheKey = `clarity_brief_${today}`;
+  const cacheKey = `clarity_brief_${today}_${briefDataFingerprint()}`;
+  // Drop stale brief caches (old days or superseded fingerprints)
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('clarity_brief_') && k !== cacheKey) localStorage.removeItem(k);
+  }
   if (!force) {
     const cached = localStorage.getItem(cacheKey);
     if (cached) return cached;
@@ -1523,7 +1611,7 @@ async function fetchAIInsight(force) {
 
   // Sleep debt context
   const debt = sleepDebt();
-  const sleepDebtContext = `14-night weighted sleep debt: ${debt.toFixed(1)}h vs ${C.sleepTarget}h/night target`;
+  const sleepDebtContext = `14-night sleep debt (sum of nightly shortfalls vs ${C.sleepTarget}h target, nights without data skipped): ${debt.toFixed(1)}h`;
 
   // Weight trajectory context — now driven by conditions model, not regression
   const _trendForPrompt = weightTrend(30);
@@ -1573,7 +1661,7 @@ async function fetchAIInsight(force) {
 
 Goal: reach ${C.goal} kg (currently ${pace.currentW?.toFixed(1) || '?'} kg)
 ${paceContext}
-Completed alcohol-free days: ${ago === null ? 'unknown' : ago - 1}
+Completed alcohol-free days: ${afDays() === null ? 'unknown' : afDays()} (this is the number shown on the user's home screen — use it verbatim if you mention the streak)
 Approach start: ${C.start}
 
 Last 7 days wellness:
@@ -1633,17 +1721,16 @@ async function refreshBrief() { await renderBrief(true); }
 
 // ── Render: Home ──────────────────────────────────────────────────────────────
 function renderHome() {
-  const today  = toISO(new Date());
-  const yest   = toISO(daysAgo(1));
-  const todayW = wellness.find(w => w.id === today);
+  const yest    = toISO(daysAgo(1));
   const yesterW = wellness.find(w => w.id === yest);
 
   document.getElementById('hdr-date').textContent =
     new Date().toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // Hero: days since last drink
-  const ago = lastDrinkDays();
-  document.getElementById('hero-eyebrow').textContent = 'Days since last drink';
+  // Hero: completed alcohol-free days — same afDays() number used everywhere
+  const ago  = lastDrinkDays();
+  const disp = afDays();
+  document.getElementById('hero-eyebrow').textContent = 'Alcohol-free days';
   if (ago === null) {
     document.getElementById('hero-day').textContent = '0';
     document.getElementById('hero-sub').textContent = 'Log a session to start tracking';
@@ -1666,31 +1753,32 @@ function renderHome() {
     }
     document.getElementById('hero-sub').textContent = subMsg;
   } else if (ago === 1) {
-    document.getElementById('hero-day').textContent = '1';
-    document.getElementById('hero-sub').textContent = 'Last drink was last night — first clean morning';
+    document.getElementById('hero-day').textContent = '0';
+    document.getElementById('hero-sub').textContent = 'Last drink was last night — today is your first clean day';
   } else {
-    const displayDays = ago - 1;
-    document.getElementById('hero-day').textContent = displayDays;
-    document.getElementById('hero-sub').textContent = `${displayDays} alcohol-free day${displayDays !== 1 ? 's' : ''} and counting`;
+    document.getElementById('hero-day').textContent = disp;
+    document.getElementById('hero-sub').textContent = `${disp} completed alcohol-free day${disp !== 1 ? 's' : ''} and counting`;
   }
 
-  // HRV — show value + % vs 30-day personal baseline
+  // HRV — show value + % vs 30-day personal baseline, with freshness when stale
   const recentHrvW = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0];
   const hrv = recentHrvW?.hrv;
+  const hrvAgeDays = recentHrvW ? daysBetween(new Date(recentHrvW.id + 'T00:00:00'), new Date()) : null;
+  const hrvAgeStr  = hrvAgeDays > 1 ? ` · ${hrvAgeDays}d ago` : '';
   document.getElementById('m-hrv').textContent = hrv ? hrv.toFixed(1) : '--';
   const hrvEl = document.getElementById('m-hrv-d');
   const base30 = hrvBaseline(30);
   if (hrv && base30) {
-    const pctVsBase = ((hrv - base30) / base30 * 100).toFixed(0);
+    const pctVsBase = Math.round((hrv - base30) / base30 * 100);
     const sign = pctVsBase >= 0 ? '+' : '';
-    hrvEl.textContent = sign + pctVsBase + '% vs 30d avg';
+    hrvEl.textContent = sign + pctVsBase + '% vs 30d avg' + hrvAgeStr;
     hrvEl.className   = 'metric-delta ' + (pctVsBase >= 0 ? 'up' : 'down');
   } else if (hrv && yesterW?.hrv) {
     const d = hrv - yesterW.hrv;
-    hrvEl.textContent = (d >= 0 ? '↑ ' : '↓ ') + Math.abs(d).toFixed(1) + ' vs yest';
+    hrvEl.textContent = (d >= 0 ? '↑ ' : '↓ ') + Math.abs(d).toFixed(1) + ' vs yest' + hrvAgeStr;
     hrvEl.className   = 'metric-delta ' + (d >= 0 ? 'up' : 'down');
   } else {
-    hrvEl.textContent = hrv ? '' : 'Syncing...';
+    hrvEl.textContent = hrv ? '' : (ghConnected() ? 'Syncing...' : 'Connect Google Health');
     hrvEl.className   = 'metric-delta neu';
   }
   // Resting HR — 7-day rolling average, delta vs prior 7 days
@@ -1708,15 +1796,29 @@ function renderHome() {
     }
   }
 
-  // Sleep
-  const sleep  = todayW?.sleepSecs || yesterW?.sleepSecs;
-  const sleepH = sleep ? (sleep/3600).toFixed(1) + 'h' : '--';
-  document.getElementById('m-sleep').textContent = sleepH;
-  if (sleep && yesterW?.sleepSecs) {
-    const sd = (sleep - yesterW.sleepSecs) / 3600;
-    const sel = document.getElementById('m-sleep-d');
-    sel.textContent = (sd >= 0 ? '↑ ' : '↓ ') + Math.abs(sd).toFixed(1) + 'h';
-    sel.className   = 'metric-delta ' + (sd >= 0 ? 'up' : 'down');
+  // Sleep — latest night with data, delta vs the night before it.
+  // (Previous code compared a value against itself when today hadn't synced,
+  // producing a meaningless "↑ 0.0h".)
+  const sleepNights = [...wellness].filter(w => w.sleepSecs != null).sort((a,b) => b.id.localeCompare(a.id));
+  const s0 = sleepNights[0], s1 = sleepNights[1];
+  document.getElementById('m-sleep').textContent = s0 ? (s0.sleepSecs/3600).toFixed(1) + 'h' : '--';
+  const sel = document.getElementById('m-sleep-d');
+  if (s0) {
+    const sleepAge = daysBetween(new Date(s0.id + 'T00:00:00'), new Date());
+    if (sleepAge > 1) {
+      sel.textContent = `${sleepAge}d ago`;
+      sel.className   = 'metric-delta neu';
+    } else if (s1) {
+      const sd = (s0.sleepSecs - s1.sleepSecs) / 3600;
+      sel.textContent = (sd >= 0 ? '↑ ' : '↓ ') + Math.abs(sd).toFixed(1) + 'h vs prior night';
+      sel.className   = 'metric-delta ' + (sd >= 0 ? 'up' : 'down');
+    } else {
+      sel.textContent = '';
+      sel.className   = 'metric-delta neu';
+    }
+  } else {
+    sel.textContent = ghConnected() ? 'Syncing...' : '';
+    sel.className   = 'metric-delta neu';
   }
 
   // Weight — use most recent recorded value, not just today/yesterday
@@ -1823,6 +1925,15 @@ function renderHome() {
             return '';
           })()}
         </div>`;
+    } else if (!ghConnected()) {
+      // First-run state: clear path to connecting health data
+      azmEl.innerHTML = `
+        <div class="card" style="margin-bottom:12px;text-align:center;padding:22px 18px">
+          <div style="font-size:26px;margin-bottom:8px">⌚</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:6px">Connect Google Health</div>
+          <div style="font-size:13px;color:var(--subtext);line-height:1.5;margin-bottom:14px">Sync HRV, sleep, weight and active zone minutes to see your body respond to alcohol-free days.</div>
+          <button onclick="openSettings()" style="background:var(--primary);color:white;border:none;border-radius:12px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent">Connect in Settings</button>
+        </div>`;
     } else {
       azmEl.innerHTML = '';
     }
@@ -1844,6 +1955,14 @@ function renderHome() {
     if (passes.length > 0) parts.push(`✓ ${passes.length} pass${passes.length !== 1 ? 'es' : ''} logged`);
     parts.push(`${overallCompliance()}% alcohol-free since ${new Date(C.start + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`);
     targetEl.textContent = parts.join('  ·  ');
+  }
+
+  // Sync freshness — amber icon when connected but data is over 24h old
+  const syncBtn = document.getElementById('btn-sync');
+  if (syncBtn) {
+    const ts = lastSyncTs();
+    syncBtn.title = lastSyncLabel();
+    if (ghConnected() && (!ts || Date.now() - ts > 24 * 3600000)) syncBtn.style.color = 'var(--amber)';
   }
 
   renderChart();
@@ -2161,8 +2280,9 @@ function renderVO2Chart() {
 // Uses alcohol, AZM, and sleep debt as the three main levers.
 // The model is intentionally opinionated rather than mathematically precise.
 function projectedPace() {
-  const weekAgoStr   = toISO(daysAgo(7));
-  const weeklyDrinks = drinks.filter(d => !d.base && d.date >= weekAgoStr).length;
+  // Alcohol factor uses a trailing 7-day window (physiological recency);
+  // AZM uses the Sun-Sat calendar week because the target is calendar-weekly.
+  const weeklyDrinks = drinksInLast7Days().length;
   const azm          = weeklyAZM();
   const debt         = sleepDebt();
 
@@ -2172,13 +2292,13 @@ function projectedPace() {
   // Alcohol: biggest single lever (fat oxidation blocked for 24-48h per session + calories)
   if (weeklyDrinks === 0) {
     rate += 0.20;
-    factors.push({ label: 'Alcohol-free week', dir: 1 });
+    factors.push({ label: 'No alcohol in 7 days', dir: 1 });
   } else if (weeklyDrinks === 1) {
     rate += 0.05;
-    factors.push({ label: '1 session this week', dir: 0 });
+    factors.push({ label: '1 session in last 7 days', dir: 0 });
   } else {
     rate -= 0.10;
-    factors.push({ label: `${weeklyDrinks} sessions this week`, dir: -1 });
+    factors.push({ label: `${weeklyDrinks} sessions in last 7 days`, dir: -1 });
   }
 
   // Active zone minutes — pace-adjusted vs pro-rata for days elapsed this week
@@ -2262,8 +2382,7 @@ function renderWeightGoalCard() {
   if (pace.kgToGo > 0) {
     const afBonusPerDay    = 0.20 / 7;
     const daysGainedPerAFDay = (afBonusPerDay / (pace.rate / 7)).toFixed(1);
-    const streakAgo        = lastDrinkDays();
-    const streakDays       = streakAgo !== null ? streakAgo - 1 : 0;
+    const streakDays       = afDays() || 0;
     const streakSaved      = (streakDays * parseFloat(daysGainedPerAFDay)).toFixed(0);
     const streakLine       = streakDays > 1
       ? '<br><span style="color:var(--subtext)">' + streakDays + '-day streak = goal shifted ~' + streakSaved + ' days forward.</span>'
@@ -2308,222 +2427,6 @@ function renderWeightGoalCard() {
   `;
 }
 
-// (old renderWeightChart — replaced by conditions-driven goal card above)
-function renderWeightChart() {
-  if (typeof Chart === 'undefined') return;
-  const canvas = document.getElementById('weight-chart');
-  if (!canvas) return;
-
-  const trend   = weightTrend(30);
-  const labelEl = document.getElementById('weight-chart-label');
-  const projEl  = document.getElementById('weight-proj-label');
-
-  const allWeight = wellness.filter(w => w.weight != null).sort((a,b) => a.id.localeCompare(b.id));
-  if (allWeight.length < 2) {
-    if (labelEl) labelEl.textContent = 'Not enough weight data yet.';
-    return;
-  }
-
-  if (trend && labelEl) {
-    const kgPerWeek = (trend.slope * 7).toFixed(2);
-    const dir = trend.slope < 0 ? 'losing' : 'gaining';
-    labelEl.innerHTML = `<span style="font-weight:700">${dir} ${Math.abs(kgPerWeek)} kg/week</span> over last 30 days`;
-  } else if (labelEl) {
-    labelEl.textContent = 'Tracking weight trend — more readings needed for projection.';
-  }
-  if (trend?.projDate && projEl) {
-    const kgLeft = Math.abs(trend.currentW - C.goal).toFixed(1);
-    projEl.innerHTML = `Goal <strong>${C.goal} kg</strong> · ${kgLeft} kg to go · on current trend: <strong>${trend.projDate}</strong>`;
-    projEl.style.color = 'var(--primary)';
-  } else if (projEl) {
-    const kgLeft = trend?.currentW ? Math.abs(trend.currentW - C.goal).toFixed(1) : '?';
-    projEl.innerHTML = `Goal: <strong>${C.goal} kg</strong> · ${kgLeft} kg to go`;
-    projEl.style.color = 'var(--subtext)';
-  }
-
-  // Use day-offset numeric x-axis so dates are spaced by actual elapsed time.
-  // This ensures a March-to-May gap is visually honest and today's reading
-  // always renders at the correct right-edge position regardless of label count.
-  const epoch = new Date(allWeight[0].id + 'T00:00:00').getTime();
-  const dayOffset = iso => (new Date(iso + 'T00:00:00').getTime() - epoch) / 86400000;
-  const fmtLabel  = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
-
-  const actualData = allWeight.map(w => ({ x: dayOffset(w.id), y: +w.weight.toFixed(2) }));
-
-  // Projection: weekly steps from last data point toward goal
-  const projData = [];
-  if (trend && trend.slope < 0 && trend.daysToGoal > 0) {
-    const lastOffset = actualData[actualData.length - 1].x;
-    const daysProject = Math.min(Math.ceil(trend.daysToGoal), 365);
-    // connect from last actual to start of projection
-    projData.push(actualData[actualData.length - 1]);
-    for (let i = 7; i <= daysProject; i += 7) {
-      const absDay    = dayOffset(allWeight[allWeight.length - 1].id) + i;
-      const isoForCalc = allWeight[allWeight.length - 1].id; // relative to refTime
-      const daysSinceRef = (new Date(isoForCalc + 'T00:00:00').getTime() - trend.refTime) / 86400000 + i;
-      const proj = trend.intercept + trend.slope * daysSinceRef;
-      if (proj < C.goal - 0.5) { projData.push({ x: absDay, y: +C.goal.toFixed(2) }); break; }
-      projData.push({ x: absDay, y: +proj.toFixed(2) });
-    }
-  }
-
-  // Benchmark: −0.75 kg/week — only shown when a projection exists to compare against.
-  // Without projection it just extends the x-axis uselessly into the future.
-  const benchData = [];
-  if (projData.length > 1 && actualData.length) {
-    const startX = actualData[actualData.length - 1].x;
-    const startY = actualData[actualData.length - 1].y;
-    const maxX   = projData[projData.length - 1].x;
-    for (let dx = 0; dx <= maxX - startX; dx += 7) {
-      benchData.push({ x: startX + dx, y: +(startY - 0.107 * dx).toFixed(2) });
-    }
-  }
-
-  // x-axis: span from first reading to projection end (or today + 14d if no projection)
-  const lastActualX = actualData[actualData.length - 1].x;
-  const projEndX    = projData.length ? projData[projData.length - 1].x : null;
-  const xMax        = (projEndX != null ? projEndX : lastActualX + 14) + 2;
-
-  const allY   = [...actualData, ...projData].map(p => p.y);
-  const xMin   = 0;
-  const yMin   = Math.floor(Math.min(...allY, C.goal) - 1);
-  const yMax   = Math.ceil(Math.max(...allY) + 1);
-
-  // Build visible tick positions roughly every 2 weeks across the x range
-  const tickStep  = Math.ceil(xMax / 6 / 7) * 7; // round up to nearest week
-  const tickVals  = [];
-  for (let t = 0; t <= xMax; t += tickStep) tickVals.push(t);
-  // Always include the rightmost actual data point
-  const lastX = actualData[actualData.length - 1].x;
-  if (!tickVals.includes(lastX)) tickVals.push(lastX);
-  tickVals.sort((a,b) => a - b);
-
-  if (weightChart) weightChart.destroy();
-  weightChart = new Chart(canvas.getContext('2d'), {
-    type: 'scatter',
-    data: {
-      datasets: [
-        {
-          label: 'Weight',
-          data: actualData,
-          borderColor: '#4F46E5',
-          backgroundColor: '#4F46E5',
-          borderWidth: 2.5,
-          pointRadius: 4,
-          pointHoverRadius: 7,
-          showLine: true,
-          tension: 0.3,
-          order: 1
-        },
-        ...(projData.length > 1 ? [{
-          label: 'Projection',
-          data: projData,
-          borderColor: '#4F46E5',
-          backgroundColor: 'transparent',
-          borderWidth: 1.5,
-          borderDash: [5, 4],
-          pointRadius: 0,
-          pointHoverRadius: 5,
-          showLine: true,
-          tension: 0.3,
-          order: 2
-        }] : []),
-        ...(benchData.length > 1 ? [{
-          label: '0.75 kg/wk',
-          data: benchData,
-          borderColor: '#10B981',
-          backgroundColor: 'transparent',
-          borderWidth: 1,
-          borderDash: [3, 5],
-          pointRadius: 0,
-          showLine: true,
-          tension: 0,
-          order: 3
-        }] : [])
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      aspectRatio: 2.2,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: c => {
-              const d = new Date(epoch + c.parsed.x * 86400000);
-              const dateStr = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
-              if (c.datasetIndex === 0) return `${dateStr}: ${c.parsed.y} kg`;
-              if (c.datasetIndex === 1) return `Projected: ${c.parsed.y} kg`;
-              if (c.datasetIndex === 2) return `0.75/wk pace: ${c.parsed.y} kg`;
-              return '';
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          type: 'linear',
-          min: xMin,
-          max: xMax,
-          grid: { display: false },
-          ticks: {
-            font: { size: 10 },
-            maxRotation: 0,
-            values: tickVals,
-            callback: v => {
-              const d = new Date(epoch + v * 86400000);
-              return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
-            }
-          }
-        },
-        y: {
-          grid: { color: 'rgba(0,0,0,0.05)' },
-          ticks: { font: { size: 11 }, callback: v => v + ' kg' },
-          min: yMin, max: yMax
-        }
-      }
-    }
-  });
-
-  // Update legend to reflect what's actually rendering
-  const legendEl = document.getElementById('weight-legend');
-  if (legendEl) {
-    const extras = [
-      projData.length > 1 ? `<span style="font-size:11px;color:var(--primary);opacity:0.5;font-weight:600">- - projected</span>` : '',
-      benchData.length > 1 ? `<span style="font-size:11px;color:var(--green);font-weight:600">- - 0.75 kg/wk</span>` : '',
-    ].filter(Boolean).join('');
-    legendEl.innerHTML = `
-      <span style="font-size:11px;color:var(--primary);font-weight:600">— actual</span>
-      ${extras}
-      <span style="font-size:11px;color:var(--red);font-weight:600">- - goal ${C.goal} kg</span>`;
-  }
-
-  // Draw goal line manually
-  const originalDraw = weightChart.draw.bind(weightChart);
-  weightChart.draw = function() {
-    originalDraw();
-    const ctx2 = canvas.getContext('2d');
-    const yScale = weightChart.scales.y;
-    if (C.goal < yMin || C.goal > yMax) return;
-    const y = yScale.getPixelForValue(C.goal);
-    const xStart = weightChart.chartArea.left;
-    const xEnd   = weightChart.chartArea.right;
-    ctx2.save();
-    ctx2.strokeStyle = '#EF4444';
-    ctx2.lineWidth = 1.5;
-    ctx2.setLineDash([6, 4]);
-    ctx2.globalAlpha = 0.6;
-    ctx2.beginPath(); ctx2.moveTo(xStart, y); ctx2.lineTo(xEnd, y); ctx2.stroke();
-    ctx2.globalAlpha = 0.9;
-    ctx2.fillStyle = '#EF4444';
-    ctx2.font = 'bold 10px -apple-system, sans-serif';
-    ctx2.textAlign = 'right';
-    ctx2.fillText(`Goal ${C.goal} kg`, xEnd - 4, y - 3);
-    ctx2.restore();
-  };
-  weightChart.draw();
-}
 
 // ── Render: Body Composition Chart ────────────────────────────────────────────
 let bodyCompChart = null;
@@ -2711,10 +2614,10 @@ function renderInsights() {
 
   let impactCard = '';
   if (cleanHRV.length >= 3 && afterDrinkHRV.length >= 1) {
-    const hrvDiff = avgAD_hrv && avgCln_hrv ? (avgAD_hrv - avgCln_hrv).toFixed(1) : null;
-    const slpDiff = avgAD_slp && avgCln_slp ? (avgAD_slp - avgCln_slp).toFixed(1) : null;
-    const msg = hrvDiff < 0
-      ? `Drinking knocks ${Math.abs(hrvDiff)} ms off your HRV${slpDiff < 0 ? ` and ${Math.abs(slpDiff)}h off your sleep` : ''} — that's your body in the data.`
+    const hrvDiff = (avgAD_hrv != null && avgCln_hrv != null) ? +(avgAD_hrv - avgCln_hrv).toFixed(1) : null;
+    const slpDiff = (avgAD_slp != null && avgCln_slp != null) ? +(avgAD_slp - avgCln_slp).toFixed(1) : null;
+    const msg = (hrvDiff != null && hrvDiff < 0)
+      ? `Drinking knocks ${Math.abs(hrvDiff)} ms off your HRV${slpDiff != null && slpDiff < 0 ? ` and ${Math.abs(slpDiff)}h off your sleep` : ''} — that's your body in the data.`
       : 'Keep building clean mornings — the gap will show as data grows.';
     impactCard = `
       <div class="insight-card">
@@ -2807,24 +2710,28 @@ function renderInsights() {
     </div>`;
 
   // ── This week ──
+  // "This week" = the current Sun-Sat calendar week everywhere in the app,
+  // matching the AZM/Zone 2 targets. HRV trend keeps a rolling 7-day window
+  // (it's a trend, not a target) and is labelled as such.
+  const calWeekStart = currentWeekSunday();
   const weekAgoStr  = toISO(daysAgo(7));
   const twoWeeksStr = toISO(daysAgo(14));
   const thisWeekHRV = withHRV.filter(w => w.id >= weekAgoStr);
   const lastWeekHRV = withHRV.filter(w => w.id >= twoWeeksStr && w.id < weekAgoStr);
-  const drinkThisWeek = [...drinkNights].filter(d => d >= weekAgoStr).length;
+  const drinkThisWeek = drinksThisCalWeek().length;
   const avgThis = avgFn(thisWeekHRV.map(w => w.hrv));
   const avgLast = avgFn(lastWeekHRV.map(w => w.hrv));
   let weekCompare = avgThis && avgLast
     ? `<div class="insight-body" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-        Last week avg: <strong>${avgLast.toFixed(1)} ms</strong> — HRV is <span class="${avgThis >= avgLast ? 'up' : 'down'}">${avgThis >= avgLast ? '↑' : '↓'} ${Math.abs(avgThis - avgLast).toFixed(1)} ms</span> this week.
+        Prior 7 days avg: <strong>${avgLast.toFixed(1)} ms</strong> — HRV is <span class="${avgThis >= avgLast ? 'up' : 'down'}">${avgThis >= avgLast ? '↑' : '↓'} ${Math.abs(avgThis - avgLast).toFixed(1)} ms</span> over the last 7 days.
        </div>`
     : '';
 
   // ── Fat loss conditions this week ──
   const azm = weeklyAZM();
   const vo2 = latestVO2();
-  const trainingDays = wellness.filter(w => w.id >= weekAgoStr && (w.totalAZM || 0) > 0);
-  const restDays     = wellness.filter(w => w.id >= weekAgoStr && !(w.totalAZM > 0));
+  const trainingDays = wellness.filter(w => w.id >= calWeekStart && (w.totalAZM || 0) > 0);
+  const restDays     = wellness.filter(w => w.id >= calWeekStart && !(w.totalAZM > 0));
   const avgTrainHRV  = avgFn(trainingDays.filter(w => w.hrv != null).map(w => w.hrv));
   const avgRestHRV   = avgFn(restDays.filter(w => w.hrv != null).map(w => w.hrv));
   const totalActive  = azm.fatBurn + azm.cardio + azm.peak;
@@ -2877,9 +2784,9 @@ function renderInsights() {
       </div>`;
   }
 
-  // ── Alcohol calorie counter + cost-benefit ──
+  // ── Alcohol calorie counter + cost-benefit ── (current Sun-Sat week)
   const allRealDrinks = drinks.filter(d => !d.base);
-  const recentDrinks  = allRealDrinks.filter(d => d.date >= weekAgoStr);
+  const recentDrinks  = drinksThisCalWeek();
   const weekSessions  = recentDrinks.length;
   const weekDrinkCount = recentDrinks.reduce((s, d) => s + (d.n || 2), 0); // default 2 if not logged
   const weekKcal      = weekDrinkCount * C.kcalPerDrink;
@@ -2962,7 +2869,7 @@ function renderInsights() {
         <div class="insight-title">Sleep debt (14 nights)</div>
         <div style="font-size:20px;font-weight:800;color:${debtColor}">${debt.toFixed(1)}h</div>
       </div>
-      <div style="font-size:12px;color:var(--subtext);margin:2px 0 12px">weighted avg deficit vs ${C.sleepTarget}h target</div>
+      <div style="font-size:12px;color:var(--subtext);margin:2px 0 12px">total shortfall vs ${C.sleepTarget}h target (nights with data)</div>
       <div style="display:flex;gap:3px;margin-bottom:10px">${sleepBars}</div>
       <div class="insight-body">${debtNote}</div>
     </div>`;
@@ -3061,7 +2968,7 @@ function renderInsights() {
       compoundCard = `
         <div class="insight-card" style="background:linear-gradient(135deg,#1A1A2E 0%,#16213E 100%);color:white">
           <div class="insight-title" style="color:white">90-day compound effect</div>
-          <div style="font-size:12px;opacity:0.6;margin:4px 0 14px">Where current trends take you</div>
+          <div style="font-size:12px;opacity:0.6;margin:4px 0 14px">Where your measured 30-day trends take you — distinct from the conditions-based goal date below</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">${boxes}</div>
           <div style="font-size:13px;opacity:0.8;line-height:1.55">${note}</div>
         </div>`;
@@ -3171,12 +3078,14 @@ function saveDrink() {
   const comp = overallCompliance();
   toast(`Logged. ${comp}% alcohol-free overall — back in fat-burning mode within 48h.`);
   renderHome(); renderLog(); renderInsights();
+  if (getOAIKey()) renderBrief(false); // data changed → brief regenerates to match
 }
 
 function del(id) {
   drinks = drinks.filter(d => d.id !== id);
   persist(drinks);
   renderLog(); renderHome(); renderInsights();
+  if (getOAIKey()) renderBrief(false);
   toast('Removed');
 }
 
@@ -3205,7 +3114,7 @@ async function sendEventMessage() {
   const msgEl = document.getElementById('ep-messages');
 
   // Add user bubble
-  msgEl.innerHTML += `<div class="ep-bubble user">${text.replace(/</g,'&lt;')}</div>`;
+  msgEl.innerHTML += `<div class="ep-bubble user">${esc(text)}</div>`;
   epHistory.push({ role: 'user', content: text });
 
   // Loading bubble
@@ -3225,7 +3134,7 @@ async function sendEventMessage() {
   const context = `You are a direct, science-based health coach. The user is reducing alcohol to lose 15+ kg. Current status:
 - Goal: reach ${C.goal}kg (currently ${pace.currentW?.toFixed(1) || '?'}kg, ${pace.kgToGo > 0 ? pace.kgToGo + 'kg to go' : 'at goal'})
 - Projected arrival: ${pace.projDate || 'insufficient data'} at ${pace.rate.toFixed(2)}kg/week
-- Completed AF days: ${ago !== null ? ago - 1 : 'unknown'}
+- Completed AF days: ${afDays() !== null ? afDays() : 'unknown'}
 - ${hrvStatus}
 - Sleep debt: ${debt.toFixed(1)}h over 14 nights
 - Weekly Zone 2: ${weeklyAZM().fatBurn}m / ${C.zone2Target}m target
@@ -3252,7 +3161,7 @@ Give practical, specific game plans. When the user describes an event, structure
     const loadEl = document.getElementById(loadId);
     if (loadEl) {
       loadEl.className = 'ep-bubble ai';
-      loadEl.innerHTML = reply.replace(/\n/g, '<br>');
+      loadEl.innerHTML = esc(reply).replace(/\n/g, '<br>');
     }
   } catch (e) {
     const loadEl = document.getElementById(loadId);
@@ -3262,11 +3171,9 @@ Give practical, specific game plans. When the user describes an event, structure
 }
 
 // ── Weekly Summary ────────────────────────────────────────────────────────────
+// Keyed by the current week's Sunday — same Sun-Sat week the rest of the app uses
 function weekKey() {
-  const d = new Date(); d.setHours(0,0,0,0);
-  const day = d.getDay();
-  const monday = new Date(d); monday.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
-  return toISO(monday);
+  return currentWeekSunday();
 }
 
 async function fetchWeeklySummary(force) {
@@ -3283,17 +3190,23 @@ async function fetchWeeklySummary(force) {
 
   const pace   = projectedPace();
   const debt   = sleepDebt();
-  const ago    = lastDrinkDays();
-  const azm    = weeklyAZM();
   const base30 = hrvBaseline(30);
   const latestHRV = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.hrv;
-  const week   = drinks.filter(d => !d.base && d.date >= toISO(daysAgo(7)));
+  // Review covers the PREVIOUS completed Sun-Sat week — not a rolling window —
+  // so the numbers match the calendar-week cards everywhere else in the app.
+  const [pwStart, pwEnd] = prevWeekRange();
+  const week     = drinks.filter(d => !d.base && d.date >= pwStart && d.date <= pwEnd);
   const weekKcal = week.reduce((s, d) => s + (d.n || 2) * C.kcalPerDrink, 0);
+  const pwWell   = wellness.filter(w => w.id >= pwStart && w.id <= pwEnd);
+  const lastWkAZM = {
+    total:   pwWell.reduce((s, w) => s + (w.totalAZM    || 0), 0),
+    fatBurn: pwWell.reduce((s, w) => s + (w.fatBurnMins || 0), 0),
+  };
 
-  const prompt = `Write a 3-sentence weekly summary for this person reducing alcohol to lose weight. Make it honest, direct and specific to their numbers. Start with the biggest win this week, then one thing to watch, then their outlook. No preamble, no headers.
+  const prompt = `Write a 3-sentence weekly summary for this person reducing alcohol to lose weight. Make it honest, direct and specific to their numbers. Start with the biggest win last week, then one thing to watch, then their outlook. No preamble, no headers.
 
-This week: ${week.length} sessions, ${weekKcal} kcal from alcohol, ${azm.total} AZM (${azm.fatBurn}m Zone 2), sleep debt ${debt.toFixed(1)}h
-Completed AF days: ${ago !== null ? ago - 1 : 'unknown'}
+Last week (Sun-Sat): ${week.length} sessions, ${weekKcal} kcal from alcohol, ${lastWkAZM.total} AZM (${lastWkAZM.fatBurn}m Zone 2), sleep debt ${debt.toFixed(1)}h
+Completed AF days: ${afDays() !== null ? afDays() : 'unknown'}
 Goal pace: ${pace.projDate ? pace.projDate + ' at ' + pace.rate.toFixed(2) + 'kg/week' : pace.rate.toFixed(2) + 'kg/week'}
 HRV: ${latestHRV ? latestHRV.toFixed(1) + 'ms (' + (base30 ? ((latestHRV - base30) / base30 * 100).toFixed(0) + '% vs baseline' : 'no baseline yet') + ')' : 'no data'}`;
 
@@ -3333,7 +3246,7 @@ async function renderWeeklySummary() {
   el.innerHTML = `
     <div class="weekly-card">
       <div class="weekly-label">Week in review</div>
-      <div class="weekly-body">${text}</div>
+      <div class="weekly-body">${esc(text)}</div>
       <div class="weekly-actions">
         <button class="weekly-btn" onclick="refreshWeeklySummary()">↻ refresh</button>
         <button class="weekly-btn" onclick="document.getElementById('weekly-summary-card').innerHTML=''">✕</button>
@@ -3366,6 +3279,9 @@ function openSettings() {
     oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
   }
 
+  const syncLine = document.getElementById('sync-status-line');
+  if (syncLine) syncLine.textContent = ghConnected() ? lastSyncLabel() : 'Google Health not connected';
+
   document.getElementById('settings-modal').classList.add('open');
 }
 function closeSettings()    { document.getElementById('settings-modal').classList.remove('open'); }
@@ -3390,16 +3306,17 @@ function copy6WeekSummary() {
   const drinkSessions = windowDrinks.length;
   const totalDrinks   = windowDrinks.reduce((s, d) => s + (d.n || 2), 0);
   const drinkDays     = new Set(windowDrinks.map(d => d.date)).size;
-  const afDays        = windowDays - drinkDays;
-  const afPct         = Math.round(afDays / windowDays * 100);
+  const afDayCount    = windowDays - drinkDays;
+  const afPct         = Math.round(afDayCount / windowDays * 100);
   const avgPerSession = drinkSessions > 0 ? (totalDrinks / drinkSessions).toFixed(1) : '0';
-  const streak        = lastDrinkDays();
+  const streak        = afDays();
 
   // AZM — daily readings, compute weekly averages
-  const azmW      = wellness.filter(w => w.id >= sixWeeksAgo && w.totalAZM != null);
-  const weeks     = Math.max(1, windowDays / 7);
-  const weeklyAZM   = azmW.length > 0 ? Math.round(azmW.reduce((s, w) => s + (w.totalAZM   || 0), 0) / weeks) : null;
-  const weeklyZ2    = azmW.length > 0 ? Math.round(azmW.reduce((s, w) => s + (w.fatBurnAZM || 0), 0) / weeks) : null;
+  // (field is fatBurnMins — fatBurnAZM was a bug that zeroed Zone 2 in every export)
+  const azmW         = wellness.filter(w => w.id >= sixWeeksAgo && w.totalAZM != null);
+  const weeks        = Math.max(1, windowDays / 7);
+  const avgWeeklyAZM = azmW.length > 0 ? Math.round(azmW.reduce((s, w) => s + (w.totalAZM    || 0), 0) / weeks) : null;
+  const avgWeeklyZ2  = azmW.length > 0 ? Math.round(azmW.reduce((s, w) => s + (w.fatBurnMins || 0), 0) / weeks) : null;
 
   // HRV
   const latestHRV = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0]?.hrv;
@@ -3419,13 +3336,13 @@ function copy6WeekSummary() {
       : 'Insufficient weight data',
     '',
     'Alcohol compliance',
-    'AF days: ' + afDays + '/' + windowDays + ' (' + afPct + '%)',
+    'AF days: ' + afDayCount + '/' + windowDays + ' (' + afPct + '%)',
     'Drink sessions: ' + drinkSessions + ' · Avg ' + avgPerSession + ' drinks/session',
-    streak !== null ? ('Completed AF days: ' + (streak - 1)) : '',
+    streak !== null ? ('Completed AF days: ' + streak) : '',
     '',
     'Training',
-    weeklyAZM !== null ? ('Avg weekly AZM: ' + weeklyAZM + ' min') : 'No AZM data',
-    weeklyZ2  !== null ? ('Avg weekly Zone 2: ' + weeklyZ2 + ' min (target: ' + C.zone2Target + ')') : '',
+    avgWeeklyAZM !== null ? ('Avg weekly AZM: ' + avgWeeklyAZM + ' min') : 'No AZM data',
+    avgWeeklyZ2  !== null ? ('Avg weekly Zone 2: ' + avgWeeklyZ2 + ' min (target: ' + C.zone2Target + ')') : '',
     '',
     'Recovery',
     'Sleep debt: ' + debt.toFixed(1) + ' h',
@@ -3461,7 +3378,10 @@ function saveSettings() {
   if (oaiVal && !oaiVal.startsWith('••')) {
     if (!oaiVal.startsWith('sk-')) { toast('That doesn\'t look like a valid OpenAI key'); return; }
     setOAIKey(oaiVal);
-    localStorage.removeItem('clarity_brief_' + toISO(new Date()));
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('clarity_brief_')) localStorage.removeItem(k);
+    }
   }
 
   closeSettings();
@@ -3506,17 +3426,25 @@ async function syncWellness() {
   }
 
   toast('Syncing health data...');
-  wellness = await fetchWellness();
+  const fresh = await fetchWellness();
+  if (fresh.length) {
+    wellness = fresh;
+    saveWellnessCache(fresh);
+    toast('Synced ✓');
+  } else {
+    // Keep the last good data — never blank the dashboard on a failed sync
+    toast('Sync returned no data — showing last good sync');
+  }
   renderHome();
   renderInsights();
+  if (fresh.length && getOAIKey()) renderBrief(false); // new data → brief stays in step
 
   if (btn) {
     clearInterval(btn._spin);
     btn.style.transform = 'rotate(0deg)';
-    btn.style.color = 'var(--green)';
+    btn.style.color = fresh.length ? 'var(--green)' : 'var(--amber)';
     setTimeout(() => { btn.style.color = 'var(--subtext)'; }, 1500);
   }
-  toast('Synced ✓');
   syncing = false;
 }
 
@@ -3533,9 +3461,17 @@ async function boot() {
 
   drinks  = loadDrinks();
   passes  = loadPasses();
+
+  // Render instantly from the on-device cache, then refresh from the API
+  const cached = loadWellnessCache();
+  if (cached?.data?.length) wellness = cached.data;
   renderHome(); renderLog();
 
-  wellness = await fetchWellness();
+  const fresh = await fetchWellness();
+  if (fresh.length) {
+    wellness = fresh;
+    saveWellnessCache(fresh);
+  }
   renderHome(); renderInsights();
 
   if (!getOAIKey()) {
@@ -3544,6 +3480,16 @@ async function boot() {
     renderBrief(false);
   }
 }
+
+// Chart.js loads async — if boot rendered before the library arrived, the HRV
+// chart silently never drew. Re-render once the library is ready.
+const _chartPoll = setInterval(() => {
+  if (typeof Chart !== 'undefined') {
+    clearInterval(_chartPoll);
+    renderChart();
+  }
+}, 150);
+setTimeout(() => clearInterval(_chartPoll), 15000);
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').then(reg => {
