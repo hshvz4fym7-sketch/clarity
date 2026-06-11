@@ -694,7 +694,7 @@
       <div class="tab-header">
         <h2>Drink Log</h2>
         <div style="display:flex;gap:8px">
-          <button class="btn-pass" onclick="logPass()">✓ Passed</button>
+          <button class="btn-pass" onclick="openPassModal()">✓ Passed</button>
           <button class="btn-add" onclick="openModal()">+ Log</button>
         </div>
       </div>
@@ -760,6 +760,14 @@
     </div>
 
     <div class="form-group">
+      <label class="form-label">Was this deliberate?</label>
+      <div class="pills" id="plan-pills">
+        <div class="pill on" data-plan="1" onclick="pickPlan(this)">Planned ahead</div>
+        <div class="pill"    data-plan="0" onclick="pickPlan(this)">In the moment</div>
+      </div>
+    </div>
+
+    <div class="form-group">
       <label class="form-label">Estimated cost ($)</label>
       <input type="number" class="form-input" id="f-cost" placeholder="0" min="0" step="1">
     </div>
@@ -795,6 +803,20 @@
       <div style="font-size:12px;color:var(--subtext);margin-top:6px">Stored on this device only. Never included in the app source code.</div>
     </div>
 
+    <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+      <label class="form-label">Weekly budget — your definition of on track</label>
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <input type="number" class="form-input" id="f-budget-sessions" min="0" max="7" inputmode="numeric">
+          <div style="font-size:11px;color:var(--subtext);margin-top:4px">sessions / week</div>
+        </div>
+        <div style="flex:1">
+          <input type="number" class="form-input" id="f-budget-drinks" min="1" max="15" inputmode="numeric">
+          <div style="font-size:11px;color:var(--subtext);margin-top:4px">drinks / session</div>
+        </div>
+      </div>
+    </div>
+
     <button class="btn-primary" onclick="saveSettings()">Save</button>
     <button onclick="showGHStatus()" style="display:block;width:100%;margin-top:10px;padding:12px;background:none;border:1.5px solid var(--border);border-radius:10px;color:var(--subtext);font-size:14px;cursor:pointer">Show API status</button>
     <div id="sync-status-line" style="font-size:12px;color:var(--subtext);text-align:center;margin-top:8px"></div>
@@ -821,6 +843,27 @@
       <input class="ep-input" id="ep-input" type="text" placeholder="e.g. work dinner on Friday, want to keep it to 2 drinks..." onkeydown="if(event.key==='Enter')sendEventMessage()">
       <button class="ep-send" onclick="sendEventMessage()">→</button>
     </div>
+  </div>
+</div>
+
+<!-- Pass modal — capture WHAT was passed on; passes at habit windows are the headline win -->
+<div class="modal" id="pass-modal" onclick="bgClosePass(event)">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>Passed on a drink</h3>
+      <button class="btn-close" onclick="closePassModal()">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">What did you pass on?</label>
+      <div class="pills" id="trigger-pills">
+        <div class="pill on" data-trig="After work"        onclick="pickTrigger(this)">After work</div>
+        <div class="pill"    data-trig="Weeknight at home" onclick="pickTrigger(this)">Weeknight at home</div>
+        <div class="pill"    data-trig="Out with friends"  onclick="pickTrigger(this)">Out with friends</div>
+        <div class="pill"    data-trig="Stress"            onclick="pickTrigger(this)">Stress</div>
+        <div class="pill"    data-trig="Just habit"        onclick="pickTrigger(this)">Just habit</div>
+      </div>
+    </div>
+    <button class="btn-primary" onclick="savePass()">Log the win</button>
   </div>
 </div>
 
@@ -1070,8 +1113,10 @@ let passes   = [];
 let chart    = null;
 let rhrChart = null;
 let vo2Chart = null;
-let stepN    = 2;
-let ctx      = 'social';
+let stepN       = 2;
+let ctx         = 'social';
+let plannedSel  = true;          // log modal: was this session deliberate?
+let passTrigger = 'After work';  // pass modal: what was passed on
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 function loadDrinks() {
@@ -1119,11 +1164,53 @@ function loadPasses() {
   return s ? JSON.parse(s) : [];
 }
 function persistPasses() { localStorage.setItem('clarity_passes', JSON.stringify(passes)); }
-function logPass() {
-  passes.push({ id: uid(), date: toISO(new Date()) });
+
+function openPassModal() {
+  passTrigger = 'After work';
+  document.querySelectorAll('#trigger-pills .pill').forEach(p => p.classList.toggle('on', p.dataset.trig === passTrigger));
+  document.getElementById('pass-modal').classList.add('open');
+}
+function closePassModal() { document.getElementById('pass-modal').classList.remove('open'); }
+function bgClosePass(e)   { if (e.target === document.getElementById('pass-modal')) closePassModal(); }
+function pickTrigger(el) {
+  document.querySelectorAll('#trigger-pills .pill').forEach(p => p.classList.remove('on'));
+  el.classList.add('on');
+  passTrigger = el.dataset.trig;
+}
+function savePass() {
+  passes.push({ id: uid(), date: toISO(new Date()), trigger: passTrigger });
   persistPasses();
-  toast('Pass logged — that counts ✓');
+  closePassModal();
+  toast('Pass logged — a rep against the habit ✓');
   renderLog(); renderHome(); renderInsights();
+  if (getOAIKey()) renderBrief(false);
+}
+
+// ── Weekly budget — the user's own definition of "on track" ──────────────────
+function getBudget() {
+  try {
+    const b = JSON.parse(localStorage.getItem('clarity_budget'));
+    if (b && typeof b.s === 'number' && typeof b.d === 'number' && b.s >= 0 && b.d > 0) return b;
+  } catch {}
+  return { s: 2, d: 4 }; // default: 2 sessions/week, up to 4 drinks each
+}
+function setBudget(s, d) { localStorage.setItem('clarity_budget', JSON.stringify({ s, d })); }
+
+// ── Habit vs choice — the core metric of this app ─────────────────────────────
+// planned === true  → deliberate session (success under mindful moderation)
+// planned === false → autopilot/habitual session (the thing to drive to zero)
+// planned undefined → logged before this feature existed (unclassified)
+function habitStats(days) {
+  const cut  = toISO(daysAgo(days));
+  const real = drinks.filter(d => !d.base && d.date >= cut);
+  const planned      = real.filter(d => d.planned === true).length;
+  const habitual     = real.filter(d => d.planned === false).length;
+  const unclassified = real.length - planned - habitual;
+  const ps = passes.filter(p => p.date >= cut);
+  const counts = {};
+  ps.forEach(p => { if (p.trigger) counts[p.trigger] = (counts[p.trigger] || 0) + 1; });
+  const topTrigger = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  return { planned, habitual, unclassified, total: real.length, passes: ps.length, topTrigger };
 }
 function delPass(id) {
   passes = passes.filter(p => p.id !== id);
@@ -1619,8 +1706,9 @@ function prevWeekRange() {
   return [toISO(start), toISO(end)];
 }
 
-// ── Weeks on target (≤2 drink sessions per week) ──────────────────────────────
+// ── Weeks on target (within the personal weekly session budget) ───────────────
 function weeksOnTarget() {
+  const cap = getBudget().s;
   const getMonday = d => {
     const nd = new Date(d); nd.setHours(0,0,0,0);
     const day = nd.getDay();
@@ -1634,7 +1722,7 @@ function weeksOnTarget() {
     const wEnd = new Date(wStart); wEnd.setDate(wEnd.getDate() + 6);
     const ws = toISO(wStart), we = toISO(wEnd);
     const count = drinks.filter(d => !d.base && d.date >= ws && d.date <= we).length;
-    results.push(count <= 2);
+    results.push(count <= cap);
     wStart.setDate(wStart.getDate() + 7);
   }
   let streak = 0;
@@ -1831,11 +1919,14 @@ async function fetchAIInsight(force) {
   const z2mins  = weeklyAZM().fatBurn;
   const zone2Context = `Zone 2 (fat burn) this week: ${z2mins}m / ${C.zone2Target}m target${z2mins >= C.zone2Target ? ' — target met' : ' — ' + (C.zone2Target - z2mins) + 'm short'}`;
 
-  const prompt = `You are a direct health coach. Write exactly 2 short sentences — no more. Sentence 1: where I'm at today (weight, streak, one standout metric). Sentence 2: the single most important thing to act on or watch right now. Use my actual numbers. No projection date, no preamble, no sign-off.
+  const hsAI = habitStats(30);
+  const bud  = getBudget();
+  const prompt = `You are a direct health coach for mindful moderation — NOT sobriety. The user is breaking habitual autopilot drinking to lose weight. A planned social session within their budget (${bud.s} sessions/week, up to ${bud.d} drinks each) is SUCCESS, never slippage — never preach abstinence or frame a planned session as a setback. Autopilot (unplanned) sessions are the only negative. Write exactly 2 short sentences — no more. Sentence 1: where I'm at today (weight, habit picture, one standout metric). Sentence 2: the single most important thing to act on or watch right now. Use my actual numbers. No projection date, no preamble, no sign-off.
 
 Goal: reach ${C.goal} kg (currently ${pace.currentW?.toFixed(1) || '?'} kg)
 ${paceContext}
-Completed alcohol-free days: ${afDays() === null ? 'unknown' : afDays()} (this is the number shown on the user's home screen — use it verbatim if you mention the streak)
+Habit picture (30d): ${hsAI.planned} planned session(s), ${hsAI.habitual} autopilot session(s), ${hsAI.passes} pass(es)${hsAI.unclassified ? ', ' + hsAI.unclassified + ' unclassified' : ''}
+Completed alcohol-free days: ${afDays() === null ? 'unknown' : afDays()}
 Approach start: ${C.start}
 
 Last 7 days wellness:
@@ -1901,38 +1992,24 @@ function renderHome() {
   document.getElementById('hdr-date').textContent =
     new Date().toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // Hero: completed alcohol-free days — same afDays() number used everywhere
-  const ago  = lastDrinkDays();
+  // Hero: autopilot (habitual) sessions in the last 30 days — the number this
+  // app exists to drive to zero. A planned session is success, not slippage,
+  // so it never appears here. The AF streak remains as a secondary stat below.
   const disp = afDays();
-  document.getElementById('hero-eyebrow').textContent = 'Alcohol-free days';
-  if (ago === null) {
-    animateValue(document.getElementById('hero-day'), 0);
-    document.getElementById('hero-sub').textContent = 'Log a session to start tracking';
-  } else if (ago === 0) {
-    animateValue(document.getElementById('hero-day'), 0);
-    // Show how long the clean streak was before tonight
-    const sorted = [...drinks].sort((a,b) => b.date.localeCompare(a.date));
-    let subMsg = 'Fresh start tomorrow';
-    if (sorted.length >= 2) {
-      const d1 = new Date(sorted[1].date + 'T00:00:00');
-      const d2 = new Date(sorted[0].date + 'T00:00:00');
-      const cleanDays = daysBetween(d1, d2) - 1;
-      if (cleanDays >= 3) {
-        subMsg = `${cleanDays} clean days before tonight — still well ahead of baseline`;
-      } else if (cleanDays === 2) {
-        subMsg = 'Two clean days before tonight — this is not starting over';
-      } else if (cleanDays === 1) {
-        subMsg = 'One clean day before tonight — tomorrow is what counts';
-      }
-    }
-    document.getElementById('hero-sub').textContent = subMsg;
-  } else if (ago === 1) {
-    animateValue(document.getElementById('hero-day'), 0);
-    document.getElementById('hero-sub').textContent = 'Last drink was last night — today is your first clean day';
+  const hs   = habitStats(30);
+  document.getElementById('hero-eyebrow').textContent = 'Autopilot sessions · 30 days';
+  animateValue(document.getElementById('hero-day'), hs.habitual);
+  let heroSub;
+  if (hs.total === 0 && hs.passes === 0) {
+    heroSub = drinks.length ? 'No sessions in 30 days' : 'Log a session to start tracking';
+  } else if (hs.habitual === 0 && hs.planned > 0) {
+    heroSub = `Every session was a deliberate choice (${hs.planned} planned${hs.passes ? ', ' + hs.passes + ' pass' + (hs.passes !== 1 ? 'es' : '') : ''}) — exactly the goal`;
+  } else if (hs.habitual === 0) {
+    heroSub = hs.passes > 0 ? `${hs.passes} pass${hs.passes !== 1 ? 'es' : ''} and zero autopilot sessions` : 'Zero autopilot sessions';
   } else {
-    animateValue(document.getElementById('hero-day'), disp);
-    document.getElementById('hero-sub').textContent = `${disp} completed alcohol-free day${disp !== 1 ? 's' : ''} and counting`;
+    heroSub = `${hs.habitual} on autopilot · ${hs.planned} planned${hs.passes ? ' · ' + hs.passes + ' pass' + (hs.passes !== 1 ? 'es' : '') : ''}`;
   }
+  document.getElementById('hero-sub').textContent = heroSub;
 
   // HRV — show value + % vs 30-day personal baseline, with freshness when stale
   const recentHrvW = [...wellness].filter(w => w.hrv != null).sort((a,b) => b.id.localeCompare(a.id))[0];
@@ -2125,7 +2202,8 @@ function renderHome() {
   const targetEl = document.getElementById('target-weeks-row');
   if (targetEl) {
     const parts = [];
-    if (wot.streak > 0) parts.push(`🎯 ${wot.streak} week${wot.streak !== 1 ? 's' : ''} on target`);
+    if (disp !== null && disp > 0) parts.push(`🔥 ${disp} AF day${disp !== 1 ? 's' : ''}`);
+    if (wot.streak > 0) parts.push(`🎯 ${wot.streak} week${wot.streak !== 1 ? 's' : ''} in budget`);
     if (passes.length > 0) parts.push(`✓ ${passes.length} pass${passes.length !== 1 ? 'es' : ''} logged`);
     parts.push(`${overallCompliance()}% alcohol-free since ${new Date(C.start + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`);
     targetEl.textContent = parts.join('  ·  ');
@@ -2750,7 +2828,7 @@ function renderLog() {
         <div class="drink-entry" style="border-left:3px solid var(--green)">
           <div>
             <div class="drink-date">${fmtDate(entry.date)}</div>
-            <div class="drink-meta" style="color:var(--green);font-weight:600">Passed on a drink</div>
+            <div class="drink-meta" style="color:var(--green);font-weight:600">Passed on a drink${entry.trigger ? ' · ' + esc(entry.trigger) : ''}</div>
           </div>
           <div class="drink-right">
             <span class="badge badge-green">pass</span>
@@ -2758,8 +2836,9 @@ function renderLog() {
           </div>
         </div>`;
     }
-    const ctxMap = { social:'Social', celebration:'Celebration', work:'Work event', date:'Date night' };
-    const meta   = [ctxMap[entry.ctx]||entry.ctx, entry.cost ? '$'+entry.cost : null, entry.note].filter(Boolean).join(' · ');
+    const ctxMap  = { social:'Social', celebration:'Celebration', work:'Work event', date:'Date night' };
+    const planStr = entry.planned === true ? 'planned' : entry.planned === false ? 'in the moment' : null;
+    const meta    = [ctxMap[entry.ctx]||entry.ctx, planStr, entry.cost ? '$'+entry.cost : null, entry.note].filter(Boolean).join(' · ');
     return `
       <div class="drink-entry">
         <div>
@@ -2879,8 +2958,8 @@ function renderInsights() {
   }).join('');
   const weekdayDrinks = pattern.slice(0,4).reduce((s,p) => s + p.count, 0);
   const patternNote = weekdayDrinks === 0
-    ? 'All sessions on weekends — exactly on target.'
-    : `${weekdayDrinks} weekday session${weekdayDrinks !== 1 ? 's' : ''} in the mix — something to watch.`;
+    ? 'All sessions on weekends — no weekday autopilot showing.'
+    : `${weekdayDrinks} weekday session${weekdayDrinks !== 1 ? 's' : ''} in the mix — worth checking these were choices, not habit.`;
   const patternCard = `
     <div class="insight-card">
       <div class="insight-title">When you drink</div>
@@ -3154,7 +3233,44 @@ function renderInsights() {
     }
   }
 
+  // ── Habit vs choice — the headline insight ──
+  const hs30 = habitStats(30);
+  let habitCard = '';
+  if (hs30.total > 0 || hs30.passes > 0) {
+    const rateDen   = hs30.planned + hs30.habitual + hs30.passes;
+    const delibRate = rateDen > 0 ? Math.round((hs30.planned + hs30.passes) / rateDen * 100) : null;
+    const rateCol   = delibRate >= 80 ? 'var(--green)' : delibRate >= 50 ? 'var(--amber)' : 'var(--red)';
+    const habitNote = hs30.habitual === 0
+      ? 'No autopilot drinking in 30 days — every decision was yours. That is the habit broken, regardless of what you chose.'
+      : `${hs30.habitual} session${hs30.habitual !== 1 ? 's' : ''} happened on autopilot. The goal isn't fewer good nights out — it's making every session a decision.`;
+    habitCard = `
+      <div class="insight-card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="insight-title">Habit vs choice (30 days)</div>
+          ${delibRate != null ? `<div style="font-size:13px;font-weight:700;color:${rateCol}">${delibRate}% deliberate</div>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px">
+          <div style="text-align:center;padding:12px;background:var(--green-light);border-radius:12px">
+            <div style="font-size:22px;font-weight:800;color:var(--green-text)">${hs30.planned}</div>
+            <div style="font-size:10px;color:var(--green-text);margin-top:2px">planned</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:${hs30.habitual > 0 ? 'var(--amber-light)' : 'var(--card-2)'};border-radius:12px">
+            <div style="font-size:22px;font-weight:800;color:${hs30.habitual > 0 ? 'var(--amber-text)' : 'var(--subtext)'}">${hs30.habitual}</div>
+            <div style="font-size:10px;color:${hs30.habitual > 0 ? 'var(--amber-text)' : 'var(--subtext)'};margin-top:2px">autopilot</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:var(--primary-light);border-radius:12px">
+            <div style="font-size:22px;font-weight:800;color:var(--primary)">${hs30.passes}</div>
+            <div style="font-size:10px;color:var(--primary);margin-top:2px">passes</div>
+          </div>
+        </div>
+        <div class="insight-body" style="margin-top:12px">${habitNote}</div>
+        ${hs30.topTrigger ? `<div style="font-size:12px;color:var(--subtext);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Most passes: <strong style="color:var(--text)">${esc(hs30.topTrigger)}</strong> — that's your habit window, and you're beating it.</div>` : ''}
+        ${hs30.unclassified > 0 ? `<div style="font-size:11px;color:var(--subtext);margin-top:6px">${hs30.unclassified} earlier session${hs30.unclassified !== 1 ? 's' : ''} logged before planned/autopilot tracking.</div>` : ''}
+      </div>`;
+  }
+
   document.getElementById('insights-body').innerHTML = `
+    ${habitCard}
     ${compoundCard}
     ${impactCard}
     ${alcoholCostCard}
@@ -3192,7 +3308,7 @@ function renderInsights() {
           <div class="insight-body">avg HRV</div>
         </div>
       </div>
-      <div class="insight-body" style="margin-top:10px">${wot.streak > 0 ? `🎯 ${wot.streak} consecutive week${wot.streak !== 1 ? 's' : ''} on target (≤2 sessions).` : 'A week on target means 2 or fewer sessions.'}</div>
+      <div class="insight-body" style="margin-top:10px">${wot.streak > 0 ? `🎯 ${wot.streak} consecutive week${wot.streak !== 1 ? 's' : ''} within your budget (≤${getBudget().s} sessions).` : `A week in budget means ${getBudget().s} or fewer sessions — set yours in Settings.`}</div>
       ${weekCompare}
     </div>
 
@@ -3229,25 +3345,29 @@ function openModal() {
   stepN = 2;
   document.getElementById('step-val').textContent = 2;
   ctx = 'social';
-  document.querySelectorAll('.pill').forEach(p => p.classList.toggle('on', p.dataset.ctx === 'social'));
+  document.querySelectorAll('#ctx-pills .pill').forEach(p => p.classList.toggle('on', p.dataset.ctx === 'social'));
+  plannedSel = true;
+  document.querySelectorAll('#plan-pills .pill').forEach(p => p.classList.toggle('on', p.dataset.plan === '1'));
   document.getElementById('modal').classList.add('open');
 }
 function closeModal()    { document.getElementById('modal').classList.remove('open'); }
 function bgClose(e)      { if (e.target === document.getElementById('modal')) closeModal(); }
 function step(d)         { stepN = Math.max(1, Math.min(20, stepN+d)); document.getElementById('step-val').textContent = stepN; }
-function pickCtx(el)     { document.querySelectorAll('.pill').forEach(p => p.classList.remove('on')); el.classList.add('on'); ctx = el.dataset.ctx; }
+function pickCtx(el)     { document.querySelectorAll('#ctx-pills .pill').forEach(p => p.classList.remove('on')); el.classList.add('on'); ctx = el.dataset.ctx; }
+function pickPlan(el)    { document.querySelectorAll('#plan-pills .pill').forEach(p => p.classList.remove('on')); el.classList.add('on'); plannedSel = el.dataset.plan === '1'; }
 
 function saveDrink() {
   const date = document.getElementById('f-date').value;
   if (!date) { toast('Pick a date'); return; }
   const entry = {
-    id:   uid(),
+    id:      uid(),
     date,
-    n:    stepN,
+    n:       stepN,
     ctx,
-    cost: parseFloat(document.getElementById('f-cost').value) || null,
-    note: document.getElementById('f-notes').value.trim(),
-    base: false
+    planned: plannedSel,
+    cost:    parseFloat(document.getElementById('f-cost').value) || null,
+    note:    document.getElementById('f-notes').value.trim(),
+    base:    false
   };
   drinks.push(entry);
   drinks.sort((a,b) => b.date.localeCompare(a.date));
@@ -3310,7 +3430,9 @@ async function sendEventMessage() {
   const hrvStatus = (latestHRV && base30)
     ? `HRV today: ${latestHRV.toFixed(1)}ms (${((latestHRV - base30) / base30 * 100).toFixed(0)}% vs 30d baseline of ${base30.toFixed(1)}ms)`
     : latestHRV ? `HRV today: ${latestHRV.toFixed(1)}ms` : 'HRV: no recent data';
-  const context = `You are a direct, science-based health coach. The user is reducing alcohol to lose 15+ kg. Current status:
+  const epHS  = habitStats(30);
+  const epBud = getBudget();
+  const context = `You are a direct, science-based health coach for mindful moderation — NOT sobriety. The user is breaking habitual autopilot drinking to lose 15+ kg. A planned session within their budget (${epBud.s}/week, up to ${epBud.d} drinks) is success; help them plan it well rather than talk them out of it. Habit picture (30d): ${epHS.planned} planned, ${epHS.habitual} autopilot, ${epHS.passes} passes. Current status:
 - Goal: reach ${C.goal}kg (currently ${pace.currentW?.toFixed(1) || '?'}kg, ${pace.kgToGo > 0 ? pace.kgToGo + 'kg to go' : 'at goal'})
 - Projected arrival: ${pace.projDate || 'insufficient data'} at ${pace.rate.toFixed(2)}kg/week
 - Completed AF days: ${afDays() !== null ? afDays() : 'unknown'}
@@ -3382,9 +3504,10 @@ async function fetchWeeklySummary(force) {
     fatBurn: pwWell.reduce((s, w) => s + (w.fatBurnMins || 0), 0),
   };
 
-  const prompt = `Write a 3-sentence weekly summary for this person reducing alcohol to lose weight. Make it honest, direct and specific to their numbers. Start with the biggest win last week, then one thing to watch, then their outlook. No preamble, no headers.
+  const wkBud = getBudget();
+  const prompt = `Write a 3-sentence weekly summary for this person breaking habitual drinking (mindful moderation, NOT sobriety) to lose weight. A planned session within budget is a win — never frame it as a setback; only autopilot sessions are negative. Make it honest, direct and specific to their numbers. Start with the biggest win last week, then one thing to watch, then their outlook. No preamble, no headers.
 
-Last week (Sun-Sat): ${week.length} sessions, ${weekKcal} kcal from alcohol, ${lastWkAZM.total} AZM (${lastWkAZM.fatBurn}m Zone 2), sleep debt ${debt.toFixed(1)}h
+Last week (Sun-Sat): ${week.length} sessions (${week.filter(d => d.planned === true).length} planned, ${week.filter(d => d.planned === false).length} autopilot) — budget is ${wkBud.s}/week so they were ${week.length <= wkBud.s ? 'within' : 'over'} budget. ${weekKcal} kcal from alcohol, ${lastWkAZM.total} AZM (${lastWkAZM.fatBurn}m Zone 2), sleep debt ${debt.toFixed(1)}h
 Completed AF days: ${afDays() !== null ? afDays() : 'unknown'}
 Goal pace: ${pace.projDate ? pace.projDate + ' at ' + pace.rate.toFixed(2) + 'kg/week' : pace.rate.toFixed(2) + 'kg/week'}
 HRV: ${latestHRV ? latestHRV.toFixed(1) + 'ms (' + (base30 ? ((latestHRV - base30) / base30 * 100).toFixed(0) + '% vs baseline' : 'no baseline yet') + ')' : 'no data'}`;
@@ -3457,6 +3580,12 @@ function openSettings() {
     oaiEl.value = getOAIKey() ? '••••••••••••••••' : '';
     oaiEl.placeholder = getOAIKey() ? 'Key saved — paste to replace' : 'sk-proj-...';
   }
+
+  const b = getBudget();
+  const bsEl = document.getElementById('f-budget-sessions');
+  const bdEl = document.getElementById('f-budget-drinks');
+  if (bsEl) bsEl.value = b.s;
+  if (bdEl) bdEl.value = b.d;
 
   const syncLine = document.getElementById('sync-status-line');
   if (syncLine) syncLine.textContent = ghConnected() ? lastSyncLabel() : 'Google Health not connected';
@@ -3563,7 +3692,18 @@ function saveSettings() {
     }
   }
 
+  const bs = parseInt(document.getElementById('f-budget-sessions')?.value, 10);
+  const bd = parseInt(document.getElementById('f-budget-drinks')?.value, 10);
+  if (!isNaN(bs) || !isNaN(bd)) {
+    const cur = getBudget();
+    setBudget(
+      isNaN(bs) ? cur.s : Math.max(0, Math.min(7, bs)),
+      isNaN(bd) ? cur.d : Math.max(1, Math.min(15, bd))
+    );
+  }
+
   closeSettings();
+  renderHome(); renderInsights();
   if (getOAIKey()) renderBrief(true);
 }
 
